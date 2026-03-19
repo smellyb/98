@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助
 // @namespace    http://tampermonkey.net/
-// @version      20.35
+// @version      20.36
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -209,7 +209,8 @@
         body.custom-hide-read-mode tbody[data-custom-read="true"] { display: none !important; }
         .custom-viewed-tag { background: #409EFF; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 12px; margin-left: 8px; font-weight: normal; vertical-align: middle; }
 
-        .custom-inline-preview { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
+        .custom-inline-preview-row td { padding-top: 4px; padding-bottom: 8px; }
+        .custom-inline-preview { display: flex; gap: 5px; flex-wrap: wrap; }
         .custom-inline-preview img { max-height: 250px !important; max-width: 375px !important; object-fit: cover !important; border-radius: 4px !important; border: 1px solid var(--f-border) !important; cursor: pointer !important; transition: opacity 0.2s; }
         .custom-inline-preview img:hover { opacity: 0.8; }
 
@@ -524,7 +525,15 @@
         link.parentNode.insertBefore(cb, link);
         evaluateThreadRules(tbody, link, title, url, authorName, authorUID, typeName, cb);
 
-        const previewBox = document.createElement('div'); previewBox.className = 'custom-inline-preview'; link.parentNode.appendChild(previewBox);
+        const previewRow = document.createElement('tr');
+        previewRow.className = 'custom-inline-preview-row';
+        const previewCell = document.createElement('td');
+        previewCell.colSpan = Math.max(tbody.querySelectorAll('tr:first-child > *').length, 1);
+        const previewBox = document.createElement('div');
+        previewBox.className = 'custom-inline-preview';
+        previewCell.appendChild(previewBox);
+        previewRow.appendChild(previewCell);
+        tbody.appendChild(previewRow);
 
         // 异步缓存前置嗅探
         (async () => {
