@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助123
 // @namespace    http://tampermonkey.net/
-// @version      20.37
+// @version      20.38
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -111,16 +111,35 @@
         const searchThreadCache = new Map();
         let currentSearchLbIndex = 0;
         let currentSearchGallery = [];
+        const SEARCH_PREVIEW_CONCURRENCY = 3;
+        const pendingSearchPreviewTasks = [];
+        let runningSearchPreviewTasks = 0;
 
         GM_addStyle(`
             .custom-search-preview-wrap { margin-top: 10px; }
-            .custom-search-preview-box { display: flex; gap: 6px; flex-wrap: wrap; }
-            .custom-search-preview-box img {
-                max-width: 180px; max-height: 180px; object-fit: cover; border-radius: 6px;
-                border: 1px solid #efc5d9; cursor: pointer; box-shadow: 0 2px 8px rgba(143, 42, 144, 0.08);
-                transition: transform 0.2s ease, opacity 0.2s ease;
+            .custom-search-preview-box {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                gap: 10px;
+                margin-top: 8px;
             }
-            .custom-search-preview-box img:hover { transform: translateY(-1px); opacity: 0.88; }
+            .custom-search-preview-box img {
+                width: 100%;
+                min-height: 220px;
+                max-height: 320px;
+                object-fit: cover;
+                border-radius: 8px;
+                border: 1px solid #efc5d9;
+                cursor: pointer;
+                box-shadow: 0 4px 12px rgba(143, 42, 144, 0.12);
+                background: #fff5fb;
+                transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+            }
+            .custom-search-preview-box img:hover {
+                transform: translateY(-2px);
+                opacity: 0.92;
+                box-shadow: 0 8px 18px rgba(143, 42, 144, 0.18);
+            }
             .custom-search-preview-trigger, .custom-search-preview-status {
                 display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 1.4;
                 padding: 4px 9px; border-radius: 999px; user-select: none;
@@ -129,6 +148,11 @@
                 color: #8f2a90; background: #fff5fb; border: 1px solid #e8bad2; cursor: pointer;
             }
             .custom-search-preview-trigger:hover { background: #ffeaf5; }
+            .custom-search-preview-trigger.is-loading {
+                opacity: 0.75;
+                cursor: progress;
+                pointer-events: none;
+            }
             .custom-search-preview-status {
                 color: #7a6470; background: #fff9fc; border: 1px solid #f2d7e5;
             }
@@ -263,7 +287,8 @@
         const renderSearchPreview = async (pbw, trigger, previewBox, status) => {
             if (previewBox.dataset.loaded === 'loading' || previewBox.dataset.loaded === 'done') return;
             previewBox.dataset.loaded = 'loading';
-            trigger.textContent = '⏳ 加载预览中';
+            trigger.textContent = '⏳ 自动加载预览中';
+            trigger.classList.add('is-loading');
             status.textContent = '正在获取图片…';
             status.style.display = 'inline-flex';
             try {
@@ -271,14 +296,16 @@
                 const images = link ? await fetchSearchPreviewImages(link.href) : [];
                 previewBox.innerHTML = '';
                 if (images.length) {
-                    images.forEach((src) => {
+                    images.forEach((src, index) => {
                         const img = document.createElement('img');
                         img.src = src;
-                        img.loading = 'lazy';
+                        img.loading = index < 2 ? 'eager' : 'lazy';
+                        img.decoding = 'async';
+                        img.referrerPolicy = 'no-referrer';
                         img.addEventListener('click', () => openSearchLightbox(images, src));
                         previewBox.appendChild(img);
                     });
-                    status.textContent = `已加载 ${images.length} 张预览图`;
+                    status.textContent = `已自动加载 ${images.length} 张预览图`;
                     trigger.style.display = 'none';
                     previewBox.dataset.loaded = 'done';
                 } else {
@@ -289,8 +316,30 @@
             } catch (error) {
                 previewBox.dataset.loaded = '';
                 trigger.textContent = '🖼️ 重试预览图';
+                trigger.classList.remove('is-loading');
+                trigger.style.display = 'inline-flex';
                 status.textContent = '❌ 图片加载失败';
+            } finally {
+                trigger.classList.remove('is-loading');
             }
+        };
+
+        const scheduleSearchPreviewTask = (task) => {
+            pendingSearchPreviewTasks.push(task);
+            const runNext = () => {
+                while (runningSearchPreviewTasks < SEARCH_PREVIEW_CONCURRENCY && pendingSearchPreviewTasks.length) {
+                    const nextTask = pendingSearchPreviewTasks.shift();
+                    runningSearchPreviewTasks += 1;
+                    Promise.resolve()
+                        .then(nextTask)
+                        .catch(() => {})
+                        .finally(() => {
+                            runningSearchPreviewTasks = Math.max(0, runningSearchPreviewTasks - 1);
+                            runNext();
+                        });
+                }
+            };
+            runNext();
         };
 
         const enhanceSearchResultsWithPreview = () => {
@@ -303,7 +352,7 @@
                 wrap.className = 'custom-search-preview-wrap';
                 const trigger = document.createElement('span');
                 trigger.className = 'custom-search-preview-trigger';
-                trigger.textContent = '🖼️ 查看预览图';
+                trigger.textContent = '⏳ 自动加载预览中';
                 const status = document.createElement('span');
                 status.className = 'custom-search-preview-status';
                 status.style.display = 'none';
@@ -318,6 +367,7 @@
                     event.stopPropagation();
                     renderSearchPreview(pbw, trigger, previewBox, status);
                 });
+                scheduleSearchPreviewTask(() => renderSearchPreview(pbw, trigger, previewBox, status));
             });
         };
 
