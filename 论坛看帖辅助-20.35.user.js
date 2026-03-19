@@ -111,9 +111,6 @@
         const searchThreadCache = new Map();
         let currentSearchLbIndex = 0;
         let currentSearchGallery = [];
-        const SEARCH_PREVIEW_CONCURRENCY = 3;
-        const pendingSearchPreviewTasks = [];
-        let runningSearchPreviewTasks = 0;
 
         GM_addStyle(`
             .custom-search-preview-wrap { margin-top: 10px; }
@@ -239,108 +236,68 @@
             lightbox.showAt(index >= 0 ? index : 0);
         };
 
-        const fetchSearchPreviewImages = (url) => new Promise((resolve, reject) => {
-            if (searchThreadCache.has(url)) {
-                resolve(searchThreadCache.get(url));
-                return;
-            }
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url,
-                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
-                timeout: 12000,
-                onload: (response) => {
-                    if (response.status < 200 || response.status >= 400) {
-                        reject(new Error(`HTTP ${response.status}`));
-                        return;
-                    }
-                    const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
-                    const firstPost = doc.querySelector('#postlist > div[id^="post_"]');
-                    if (!firstPost) {
-                        searchThreadCache.set(url, []);
-                        resolve([]);
-                        return;
-                    }
-                    const images = Array.from(firstPost.querySelectorAll('.t_f img, .pcb img'))
-                        .map((img) => img.getAttribute('file') || img.getAttribute('zoomfile') || img.src)
-                        .filter((src) => {
-                            if (!src) return false;
-                            const lowerSrc = src.toLowerCase();
-                            return !lowerSrc.includes('smilie')
-                                && !lowerSrc.includes('smiley')
-                                && !lowerSrc.includes('avatar')
-                                && !lowerSrc.includes('torrent.gif')
-                                && !lowerSrc.includes('hrline')
-                                && !lowerSrc.includes('common/')
-                                && !lowerSrc.includes('filetype/')
-                                && !lowerSrc.includes('static/image/');
-                        });
-                    const uniqueImages = [...new Set(images)].slice(0, 6);
-                    searchThreadCache.set(url, uniqueImages);
-                    resolve(uniqueImages);
-                },
-                ontimeout: () => reject(new Error('Timeout')),
-                onerror: () => reject(new Error('Network Error'))
-            });
-        });
+        const fetchSearchPreviewImages = async (url) => {
+            if (searchThreadCache.has(url)) return searchThreadCache.get(url);
+            const data = await fetchWithRetry(url, null, 0, 12000);
+            const images = [...new Set((data?.allImages || data?.images || []).filter(Boolean))].slice(0, 6);
+            searchThreadCache.set(url, images);
+            return images;
+        };
 
-        const renderSearchPreview = async (pbw, trigger, previewBox, status) => {
-            if (previewBox.dataset.loaded === 'loading' || previewBox.dataset.loaded === 'done') return;
+        const renderSearchPreview = (pbw, trigger, previewBox, status) => {
+            if (previewBox.dataset.loaded) return;
             previewBox.dataset.loaded = 'loading';
-            trigger.textContent = '⏳ 自动加载预览中';
+            trigger.textContent = '⏳ 加载中...';
             trigger.classList.add('is-loading');
             status.textContent = '正在获取图片…';
             status.style.display = 'inline-flex';
-            try {
-                const link = pbw.querySelector('h3 a[href*="viewthread"]');
-                const images = link ? await fetchSearchPreviewImages(link.href) : [];
-                previewBox.innerHTML = '';
-                if (images.length) {
-                    images.forEach((src, index) => {
-                        const img = document.createElement('img');
-                        img.src = src;
-                        img.loading = index < 2 ? 'eager' : 'lazy';
-                        img.decoding = 'async';
-                        img.referrerPolicy = 'no-referrer';
-                        img.addEventListener('click', () => openSearchLightbox(images, src));
-                        previewBox.appendChild(img);
-                    });
-                    status.textContent = `已自动加载 ${images.length} 张预览图`;
-                    trigger.style.display = 'none';
-                    previewBox.dataset.loaded = 'done';
-                } else {
-                    status.textContent = '⭕ 本帖无图片';
-                    trigger.style.display = 'none';
-                    previewBox.dataset.loaded = 'done';
+
+            GlobalInlineQueue.addTasks([async () => {
+                try {
+                    const link = pbw.querySelector('h3 a[href*="viewthread"]');
+                    const images = link ? await fetchSearchPreviewImages(link.href) : [];
+                    previewBox.innerHTML = '';
+                    if (images.length) {
+                        images.forEach((src, index) => {
+                            const img = document.createElement('img');
+                            img.src = src;
+                            img.loading = index < 2 ? 'eager' : 'lazy';
+                            img.decoding = 'async';
+                            img.referrerPolicy = 'no-referrer';
+                            img.addEventListener('click', () => openSearchLightbox(images, src));
+                            previewBox.appendChild(img);
+                        });
+                        status.textContent = `已加载 ${images.length} 张预览图`;
+                        trigger.style.display = 'none';
+                        previewBox.dataset.loaded = 'done';
+                    } else {
+                        status.textContent = '⭕ 本帖无图片';
+                        trigger.style.display = 'none';
+                        previewBox.dataset.loaded = 'done';
+                    }
+                } catch (error) {
+                    previewBox.dataset.loaded = '';
+                    trigger.textContent = '🖼️ 重试预览图';
+                    trigger.classList.remove('is-loading');
+                    trigger.style.display = 'inline-flex';
+                    status.textContent = '❌ 图片加载失败';
+                } finally {
+                    trigger.classList.remove('is-loading');
                 }
-            } catch (error) {
-                previewBox.dataset.loaded = '';
-                trigger.textContent = '🖼️ 重试预览图';
-                trigger.classList.remove('is-loading');
-                trigger.style.display = 'inline-flex';
-                status.textContent = '❌ 图片加载失败';
-            } finally {
-                trigger.classList.remove('is-loading');
-            }
+            }]);
         };
 
-        const scheduleSearchPreviewTask = (task) => {
-            pendingSearchPreviewTasks.push(task);
-            const runNext = () => {
-                while (runningSearchPreviewTasks < SEARCH_PREVIEW_CONCURRENCY && pendingSearchPreviewTasks.length) {
-                    const nextTask = pendingSearchPreviewTasks.shift();
-                    runningSearchPreviewTasks += 1;
-                    Promise.resolve()
-                        .then(nextTask)
-                        .catch(() => {})
-                        .finally(() => {
-                            runningSearchPreviewTasks = Math.max(0, runningSearchPreviewTasks - 1);
-                            runNext();
-                        });
-                }
-            };
-            runNext();
-        };
+        const searchPreviewObserver = new IntersectionObserver((entries, observer) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting) return;
+                const pbw = entry.target;
+                const trigger = pbw.querySelector('.custom-search-preview-trigger');
+                const previewBox = pbw.querySelector('.custom-search-preview-box');
+                const status = pbw.querySelector('.custom-search-preview-status');
+                if (trigger && previewBox && status) renderSearchPreview(pbw, trigger, previewBox, status);
+                observer.unobserve(pbw);
+            });
+        }, { rootMargin: '120px' });
 
         const enhanceSearchResultsWithPreview = () => {
             document.querySelectorAll('#threadlist .pbw').forEach((pbw) => {
@@ -352,7 +309,7 @@
                 wrap.className = 'custom-search-preview-wrap';
                 const trigger = document.createElement('span');
                 trigger.className = 'custom-search-preview-trigger';
-                trigger.textContent = '⏳ 自动加载预览中';
+                trigger.textContent = '🖼️ 滚动到可视区域后自动加载';
                 const status = document.createElement('span');
                 status.className = 'custom-search-preview-status';
                 status.style.display = 'none';
@@ -367,7 +324,7 @@
                     event.stopPropagation();
                     renderSearchPreview(pbw, trigger, previewBox, status);
                 });
-                scheduleSearchPreviewTask(() => renderSearchPreview(pbw, trigger, previewBox, status));
+                searchPreviewObserver.observe(pbw);
             });
         };
 
