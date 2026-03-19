@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助123
 // @namespace    http://tampermonkey.net/
-// @version      20.37
+// @version      20.38
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -109,28 +109,25 @@
             TIDGroup: getJSONValue('TIDGroup', '[]')
         });
         const searchThreadCache = new Map();
-        let currentSearchLbIndex = 0;
-        let currentSearchGallery = [];
+        const SEARCH_PREVIEW_MAX = 2;
+        const SEARCH_AUTO_PREVIEW = true;
 
         GM_addStyle(`
             .custom-search-preview-wrap { margin-top: 10px; }
-            .custom-search-preview-box { display: flex; gap: 6px; flex-wrap: wrap; }
+            .custom-search-preview-box { display: flex; gap: 5px; flex-wrap: wrap; }
             .custom-search-preview-box img {
-                max-width: 180px; max-height: 180px; object-fit: cover; border-radius: 6px;
-                border: 1px solid #efc5d9; cursor: pointer; box-shadow: 0 2px 8px rgba(143, 42, 144, 0.08);
-                transition: transform 0.2s ease, opacity 0.2s ease;
+                max-height: 300px; max-width: 450px; object-fit: cover; border-radius: 4px;
+                border: 1px solid #efc5d9; cursor: pointer; transition: opacity 0.2s;
             }
-            .custom-search-preview-box img:hover { transform: translateY(-1px); opacity: 0.88; }
-            .custom-search-preview-trigger, .custom-search-preview-status {
-                display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 1.4;
-                padding: 4px 9px; border-radius: 999px; user-select: none;
+            .custom-search-preview-box img:hover { opacity: 0.8; }
+            .custom-search-preview-box .custom-manual-btn {
+                font-size: 12px; color: #8f2a90; cursor: pointer; background: #fff9fc;
+                border: 1px solid #efc5d9; padding: 2px 6px; border-radius: 3px; margin-top: 5px;
+                display: inline-block; user-select: none; transition: background 0.2s;
             }
-            .custom-search-preview-trigger {
-                color: #8f2a90; background: #fff5fb; border: 1px solid #e8bad2; cursor: pointer;
-            }
-            .custom-search-preview-trigger:hover { background: #ffeaf5; }
-            .custom-search-preview-status {
-                color: #7a6470; background: #fff9fc; border: 1px solid #f2d7e5;
+            .custom-search-preview-box .custom-manual-btn:hover { background: #ffeaf5; }
+            .custom-search-preview-empty {
+                font-size: 12px; color: #7a6470; padding: 2px 0; display: inline-block; margin-top: 5px; user-select: none;
             }
             #custom-search-lightbox {
                 position: fixed; inset: 0; z-index: 9999999; display: none; align-items: center; justify-content: center;
@@ -159,6 +156,9 @@
                 background: rgba(0, 0, 0, 0.55); border-radius: 999px; padding: 5px 12px;
             }
         `);
+
+        let currentSearchLbIndex = 0;
+        let currentSearchGallery = [];
 
         const ensureSearchLightbox = () => {
             let lightbox = document.getElementById('custom-search-lightbox');
@@ -215,7 +215,7 @@
             lightbox.showAt(index >= 0 ? index : 0);
         };
 
-        const fetchSearchPreviewImages = (url) => new Promise((resolve, reject) => {
+        const fetchSearchPreviewData = (url) => new Promise((resolve, reject) => {
             if (searchThreadCache.has(url)) {
                 resolve(searchThreadCache.get(url));
                 return;
@@ -223,7 +223,7 @@
             GM_xmlhttpRequest({
                 method: 'GET',
                 url,
-                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+                headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
                 timeout: 12000,
                 onload: (response) => {
                     if (response.status < 200 || response.status >= 400) {
@@ -233,11 +233,12 @@
                     const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
                     const firstPost = doc.querySelector('#postlist > div[id^="post_"]');
                     if (!firstPost) {
-                        searchThreadCache.set(url, []);
-                        resolve([]);
+                        const emptyData = { allImages: [], images: [] };
+                        searchThreadCache.set(url, emptyData);
+                        resolve(emptyData);
                         return;
                     }
-                    const images = Array.from(firstPost.querySelectorAll('.t_f img, .pcb img'))
+                    const allImages = Array.from(firstPost.querySelectorAll('.t_f img, .pcb img'))
                         .map((img) => img.getAttribute('file') || img.getAttribute('zoomfile') || img.src)
                         .filter((src) => {
                             if (!src) return false;
@@ -251,47 +252,68 @@
                                 && !lowerSrc.includes('filetype/')
                                 && !lowerSrc.includes('static/image/');
                         });
-                    const uniqueImages = [...new Set(images)].slice(0, 6);
-                    searchThreadCache.set(url, uniqueImages);
-                    resolve(uniqueImages);
+                    const previewData = {
+                        allImages: [...new Set(allImages)],
+                        images: [...new Set(allImages)].slice(0, SEARCH_PREVIEW_MAX)
+                    };
+                    searchThreadCache.set(url, previewData);
+                    resolve(previewData);
                 },
                 ontimeout: () => reject(new Error('Timeout')),
                 onerror: () => reject(new Error('Network Error'))
             });
         });
 
-        const renderSearchPreview = async (pbw, trigger, previewBox, status) => {
-            if (previewBox.dataset.loaded === 'loading' || previewBox.dataset.loaded === 'done') return;
+        const setSearchPreviewEmptyState = (previewBox) => {
+            previewBox.innerHTML = '<span class="custom-search-preview-empty">⭕ 本帖无图片</span>';
+        };
+
+        const loadSearchInlinePreview = async (pbw, previewBox, url) => {
+            if (!url || previewBox.dataset.loaded) return;
             previewBox.dataset.loaded = 'loading';
-            trigger.textContent = '⏳ 加载预览中';
-            status.textContent = '正在获取图片…';
-            status.style.display = 'inline-flex';
+            const manualBtn = previewBox.querySelector('.custom-manual-btn');
+            if (manualBtn) {
+                manualBtn.innerText = '⏳ 加载中...';
+                manualBtn.style.cursor = 'wait';
+            }
             try {
-                const link = pbw.querySelector('h3 a[href*="viewthread"]');
-                const images = link ? await fetchSearchPreviewImages(link.href) : [];
+                const data = await fetchSearchPreviewData(url);
                 previewBox.innerHTML = '';
-                if (images.length) {
-                    images.forEach((src) => {
+                if (data.images.length) {
+                    const safeAllImages = data.allImages.length ? data.allImages : data.images;
+                    data.images.forEach((src) => {
                         const img = document.createElement('img');
                         img.src = src;
                         img.loading = 'lazy';
-                        img.addEventListener('click', () => openSearchLightbox(images, src));
+                        img.addEventListener('click', () => openSearchLightbox(safeAllImages, src));
                         previewBox.appendChild(img);
                     });
-                    status.textContent = `已加载 ${images.length} 张预览图`;
-                    trigger.style.display = 'none';
                     previewBox.dataset.loaded = 'done';
                 } else {
-                    status.textContent = '⭕ 本帖无图片';
-                    trigger.style.display = 'none';
+                    setSearchPreviewEmptyState(previewBox);
                     previewBox.dataset.loaded = 'done';
                 }
             } catch (error) {
                 previewBox.dataset.loaded = '';
-                trigger.textContent = '🖼️ 重试预览图';
-                status.textContent = '❌ 图片加载失败';
+                if (manualBtn) {
+                    manualBtn.innerText = '❌ 加载失败';
+                    manualBtn.style.cursor = 'pointer';
+                } else {
+                    previewBox.style.display = 'none';
+                }
             }
         };
+
+        const searchInlinePreviewObserver = new IntersectionObserver((entries, observer) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting) return;
+                const pbw = entry.target;
+                const previewBox = pbw.querySelector('.custom-search-preview-box');
+                const url = pbw.dataset.previewUrl;
+                if (previewBox && url) loadSearchInlinePreview(pbw, previewBox, url);
+                observer.unobserve(pbw);
+            });
+        }, { rootMargin: '100px' });
 
         const enhanceSearchResultsWithPreview = () => {
             document.querySelectorAll('#threadlist .pbw').forEach((pbw) => {
@@ -299,25 +321,35 @@
                 pbw.dataset.customPreviewBound = 'true';
                 const link = pbw.querySelector('h3 a[href*="viewthread"]');
                 if (!link) return;
+                pbw.dataset.previewUrl = link.href;
+
                 const wrap = document.createElement('div');
                 wrap.className = 'custom-search-preview-wrap';
-                const trigger = document.createElement('span');
-                trigger.className = 'custom-search-preview-trigger';
-                trigger.textContent = '🖼️ 查看预览图';
-                const status = document.createElement('span');
-                status.className = 'custom-search-preview-status';
-                status.style.display = 'none';
                 const previewBox = document.createElement('div');
                 previewBox.className = 'custom-search-preview-box';
-                wrap.appendChild(trigger);
-                wrap.appendChild(status);
                 wrap.appendChild(previewBox);
                 pbw.appendChild(wrap);
-                trigger.addEventListener('click', (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    renderSearchPreview(pbw, trigger, previewBox, status);
-                });
+
+                const cached = searchThreadCache.get(link.href);
+                if (cached && !cached.allImages.length) {
+                    setSearchPreviewEmptyState(previewBox);
+                    previewBox.dataset.loaded = 'done';
+                    return;
+                }
+
+                if (SEARCH_AUTO_PREVIEW) {
+                    searchInlinePreviewObserver.observe(pbw);
+                } else {
+                    const manualBtn = document.createElement('span');
+                    manualBtn.className = 'custom-manual-btn';
+                    manualBtn.innerText = '🖼️ 展开预览图';
+                    manualBtn.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        loadSearchInlinePreview(pbw, previewBox, link.href);
+                    });
+                    previewBox.appendChild(manualBtn);
+                }
             });
         };
 
