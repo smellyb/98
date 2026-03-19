@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         论坛看帖辅助
+// @name         论坛看帖辅助123
 // @namespace    http://tampermonkey.net/
-// @version      20.37
+// @version      20.36
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -30,9 +30,11 @@
 
     if (!document.body) return;
 
+    const isSearchResultPage = /search\.php\?mod=forum/.test(location.href);
+
     // ================= 特征嗅探 =================
     const isTargetForum = document.querySelector('.hdc.cl img[src*="logo.png"]') || document.querySelector('.hdc.cl img[alt*="98堂"]') || document.querySelector('.hdc.cl img[alt*="色花堂"]');
-    if (!isTargetForum) return;
+    if (!isTargetForum && !isSearchResultPage) return;
 
     // ================= 双轨制分区识别逻辑 =================
     const ptNode = document.querySelector('#pt');
@@ -93,10 +95,249 @@
         { value: '117', label: '图区卡通动漫' },
         { value: '165', label: '图区套图下载' },
     ];
-    const TID_LABEL_MAP = DEFAULT_TID_OPTIONS.reduce((acc, item) => {
-        acc[item.value] = item.label;
-        return acc;
-    }, {});
+
+    if (isSearchResultPage) {
+        const getJSONValue = (key, defaultValue) => {
+            const value = GM_getValue(key, defaultValue);
+            try {
+                return JSON.parse(value);
+            } catch (error) {
+                return JSON.parse(defaultValue);
+            }
+        };
+        const getSearchFilterSettings = () => ({
+            TIDGroup: getJSONValue('TIDGroup', '[]')
+        });
+        const doesTIDGroupMatch = (aElement, TIDGroup) => {
+            const href = (aElement.getAttribute('href') || '').toLowerCase();
+            return TIDGroup.some((tid) => href.includes(`fid=${tid}`) || href.includes(`forum-${tid}`));
+        };
+        const filterSearchPageResults = (settings = getSearchFilterSettings()) => {
+            document.querySelectorAll('#threadlist .pbw').forEach((pbw) => {
+                let shouldDisplay = true;
+                if (settings.TIDGroup && settings.TIDGroup.length) {
+                    const boardLink = pbw.querySelector('.xi1');
+                    shouldDisplay = !!boardLink && doesTIDGroupMatch(boardLink, settings.TIDGroup);
+                }
+                pbw.style.display = shouldDisplay ? 'block' : 'none';
+            });
+        };
+        const parseSearchBoardOptions = () => {
+            const presentMap = new Map();
+            document.querySelectorAll('#threadlist .pbw .xi1').forEach((link) => {
+                const href = link.getAttribute('href') || '';
+                const match = href.match(/(?:fid=|forum-)(\d+)/);
+                if (!match) return;
+                const fid = match[1];
+                if (!presentMap.has(fid)) {
+                    presentMap.set(fid, {
+                        value: fid,
+                        label: link.textContent.trim() || `板块 ${fid}`
+                    });
+                }
+            });
+            const ordered = DEFAULT_TID_OPTIONS.map((option) => ({
+                value: option.value,
+                label: presentMap.get(option.value)?.label || option.label
+            }));
+            presentMap.forEach((option, fid) => {
+                if (!ordered.some((item) => item.value === fid)) ordered.push(option);
+            });
+            return ordered;
+        };
+        const injectSearchFilterButton = () => {
+            const threadList = document.querySelector('#threadlist');
+            if (!threadList || document.getElementById('custom-search-filter-wrap')) return !!threadList;
+
+            GM_addStyle(`
+                .custom-search-filter-wrap {
+                    position: fixed; right: 24px; bottom: 24px; z-index: 999999;
+                    display: flex; flex-direction: column; align-items: flex-end;
+                }
+                .custom-search-filter-btn {
+                    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+                    padding: 10px 16px; border: 1px solid #d58fb8; border-radius: 999px;
+                    background: linear-gradient(135deg, #fff4fa 0%, #ffeaf5 100%);
+                    color: #8f2a90; font-size: 13px; font-weight: 700;
+                    box-shadow: 0 8px 24px rgba(143, 42, 144, 0.18);
+                    user-select: none;
+                }
+                .custom-search-filter-btn:hover { background: linear-gradient(135deg, #ffeaf5 0%, #ffd7ea 100%); }
+                .custom-search-filter-panel {
+                    display: none; position: fixed; width: 320px; max-width: min(320px, calc(100vw - 20px));
+                    max-height: min(60vh, 460px); overflow-y: auto; padding: 12px; border: 1px solid #f0bfd8; border-radius: 10px;
+                    background: #fff9fc; box-shadow: 0 6px 18px rgba(143, 42, 144, 0.08);
+                    z-index: 999998;
+                }
+                .custom-search-filter-panel.active { display: block; }
+                .custom-search-filter-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+                .custom-search-filter-tool {
+                    cursor: pointer; padding: 4px 10px; border-radius: 999px;
+                    border: 1px solid #e2b2cb; background: #fff; color: #8f2a90; font-size: 12px;
+                }
+                .custom-search-filter-list { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 8px; }
+                .custom-search-filter-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #333; cursor: pointer; }
+                .custom-search-filter-status { font-size: 12px; color: #666; }
+            `);
+
+            const boardOptions = parseSearchBoardOptions();
+            if (!boardOptions.length) return false;
+            const positionKey = 'custom_search_filter_float_pos';
+            const getSavedPosition = () => {
+                const value = GM_getValue(positionKey, '');
+                if (!value) return null;
+                try { return JSON.parse(value); } catch (error) { return null; }
+            };
+            const savePosition = (position) => GM_setValue(positionKey, JSON.stringify(position));
+
+            const wrap = document.createElement('div');
+            wrap.id = 'custom-search-filter-wrap';
+            wrap.className = 'custom-search-filter-wrap';
+            wrap.innerHTML = `<button type="button" class="custom-search-filter-btn">🧭 筛选搜索结果</button>`;
+            document.body.appendChild(wrap);
+
+            const panel = document.createElement('div');
+            panel.className = 'custom-search-filter-panel';
+            panel.innerHTML = `
+                <div class="custom-search-filter-tools">
+                    <button type="button" class="custom-search-filter-tool" data-action="select-all">全选</button>
+                    <button type="button" class="custom-search-filter-tool" data-action="clear">清空</button>
+                </div>
+                <div class="custom-search-filter-list"></div>
+                <div class="custom-search-filter-status"></div>
+            `;
+            document.body.appendChild(panel);
+
+            const toggleBtn = wrap.querySelector('.custom-search-filter-btn');
+            const list = panel.querySelector('.custom-search-filter-list');
+            const status = panel.querySelector('.custom-search-filter-status');
+            const savedPosition = getSavedPosition();
+            if (savedPosition && Number.isFinite(savedPosition.left) && Number.isFinite(savedPosition.top)) {
+                wrap.style.left = `${savedPosition.left}px`;
+                wrap.style.top = `${savedPosition.top}px`;
+                wrap.style.right = 'auto';
+                wrap.style.bottom = 'auto';
+            }
+
+            const updatePanelPosition = () => {
+                const btnRect = toggleBtn.getBoundingClientRect();
+                const panelWidth = panel.offsetWidth || 320;
+                const panelHeight = panel.offsetHeight || 320;
+                const left = Math.max(10, Math.min(btnRect.right - panelWidth, window.innerWidth - panelWidth - 10));
+                let top = btnRect.top - panelHeight - 12;
+                if (top < 10) top = Math.min(btnRect.bottom + 12, window.innerHeight - panelHeight - 10);
+                panel.style.left = `${left}px`;
+                panel.style.top = `${Math.max(10, top)}px`;
+            };
+
+            const renderStatus = () => {
+                const settings = getSearchFilterSettings();
+                const visibleCount = Array.from(document.querySelectorAll('#threadlist .pbw')).filter((pbw) => pbw.style.display !== 'none').length;
+                if (!settings.TIDGroup.length) {
+                    status.textContent = `当前状态：未启用板块筛选，显示全部 ${visibleCount} 条结果。`;
+                    return;
+                }
+                const labels = boardOptions.filter((option) => settings.TIDGroup.includes(option.value)).map((option) => option.label);
+                status.textContent = `当前只看：${labels.join('、')}（显示 ${visibleCount} 条）`;
+            };
+
+            const syncCheckboxes = () => {
+                const settings = getSearchFilterSettings();
+                list.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+                    checkbox.checked = settings.TIDGroup.includes(checkbox.value);
+                });
+                renderStatus();
+            };
+
+            boardOptions.forEach((option) => {
+                const label = document.createElement('label');
+                label.className = 'custom-search-filter-item';
+                label.innerHTML = `<input type="checkbox" value="${option.value}"><span>${option.label}</span>`;
+                label.querySelector('input').addEventListener('change', () => {
+                    const selectedValues = Array.from(list.querySelectorAll('input:checked')).map((input) => input.value);
+                    GM_setValue('TIDGroup', JSON.stringify(selectedValues));
+                    filterSearchPageResults(getSearchFilterSettings());
+                    syncCheckboxes();
+                });
+                list.appendChild(label);
+            });
+
+            wrap.addEventListener('click', (event) => {
+                const actionBtn = event.target.closest('[data-action]');
+                if (!actionBtn) return;
+                const action = actionBtn.dataset.action;
+                if (action === 'select-all') {
+                    GM_setValue('TIDGroup', JSON.stringify(boardOptions.map((option) => option.value)));
+                } else if (action === 'clear') {
+                    GM_setValue('TIDGroup', JSON.stringify([]));
+                }
+                filterSearchPageResults(getSearchFilterSettings());
+                syncCheckboxes();
+            });
+
+            let isDragging = false;
+            let dragMoved = false;
+            let offsetX = 0;
+            let offsetY = 0;
+
+            toggleBtn.addEventListener('mousedown', (event) => {
+                isDragging = true;
+                dragMoved = false;
+                const wrapRect = wrap.getBoundingClientRect();
+                offsetX = event.clientX - wrapRect.left;
+                offsetY = event.clientY - wrapRect.top;
+                event.preventDefault();
+            });
+            document.addEventListener('mousemove', (event) => {
+                if (!isDragging) return;
+                dragMoved = true;
+                const left = Math.max(0, Math.min(event.clientX - offsetX, window.innerWidth - wrap.offsetWidth));
+                const top = Math.max(0, Math.min(event.clientY - offsetY, window.innerHeight - wrap.offsetHeight));
+                wrap.style.left = `${left}px`;
+                wrap.style.top = `${top}px`;
+                wrap.style.right = 'auto';
+                wrap.style.bottom = 'auto';
+                if (panel.classList.contains('active')) updatePanelPosition();
+            });
+            document.addEventListener('mouseup', () => {
+                if (!isDragging) return;
+                isDragging = false;
+                const wrapRect = wrap.getBoundingClientRect();
+                savePosition({ left: wrapRect.left, top: wrapRect.top });
+            });
+
+            toggleBtn.addEventListener('click', (event) => {
+                if (dragMoved) {
+                    dragMoved = false;
+                    event.preventDefault();
+                    return;
+                }
+                panel.classList.toggle('active');
+                if (panel.classList.contains('active')) updatePanelPosition();
+            });
+            window.addEventListener('resize', () => {
+                if (panel.classList.contains('active')) updatePanelPosition();
+            });
+
+            filterSearchPageResults(getSearchFilterSettings());
+            syncCheckboxes();
+            return true;
+        };
+
+        const initSearchFilterButtonWhenReady = (retryCount = 0) => {
+            const isReady = !!document.querySelector('#threadlist .pbw');
+            if (isReady && injectSearchFilterButton()) return;
+            if (retryCount >= 40) return;
+            setTimeout(() => initSearchFilterButtonWhenReady(retryCount + 1), 250);
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => initSearchFilterButtonWhenReady(), { once: true });
+        } else {
+            initSearchFilterButtonWhenReady();
+        }
+        return;
+    }
 
     const ZONE_CONFIG = {
         'bt_movie': { maxImg: 2, res: ['magnet', 'torrent'], autoPreview: true },
@@ -196,7 +437,6 @@
         blockedUsers: migrateRules(GM_getValue('custom_blocked_users', [])),
         blockedTags: migrateRules(GM_getValue('custom_blocked_tags', [])),
         highlighted: migrateRules(GM_getValue('custom_highlight_keywords', [])),
-        allowedForumIds: (GM_getValue('custom_allowed_forum_ids', []) || []).map(String),
         readLinks: GM_getValue('custom_read_links', []) || [],
         interceptionLog: [],
         autoLoadNextPage: GM_getValue('custom_auto_load', false),
@@ -209,7 +449,6 @@
 
     GM_setValue('custom_blocked_keywords', STATE.blocked); GM_setValue('custom_blocked_users', STATE.blockedUsers);
     GM_setValue('custom_blocked_tags', STATE.blockedTags); GM_setValue('custom_highlight_keywords', STATE.highlighted);
-    GM_setValue('custom_allowed_forum_ids', STATE.allowedForumIds);
 
     if (Array.isArray(STATE.readLinks)) STATE.readLinks = [...new Set(STATE.readLinks.map(getTid))]; else STATE.readLinks = [];
     const saveState = (key, value) => { GM_setValue(key, value); }; document.documentElement.setAttribute('data-custom-theme', STATE.themeMode);
@@ -226,35 +465,6 @@
         STATE.interceptionLog.unshift({ title: title, url: url, reason: reason, time: new Date().toLocaleTimeString('zh-CN', { hour12: false }) });
         if (STATE.interceptionLog.length > 100) STATE.interceptionLog.length = 100;
         if (typeof window.updateLogPanel === 'function') window.updateLogPanel();
-    };
-
-    const parseForumIdFromHref = (href = '') => {
-        if (!href) return '';
-        const fidMatch = href.match(/[?&]fid=(\d+)/i);
-        if (fidMatch) return fidMatch[1];
-        const forumMatch = href.match(/forum-(\d+)/i);
-        if (forumMatch) return forumMatch[1];
-        return '';
-    };
-
-    const getThreadForumInfo = (tbody) => {
-        const candidateLinks = Array.from(tbody.querySelectorAll('a[href*="forumdisplay"], a[href*="forum-"]'));
-        for (const anchor of candidateLinks) {
-            const forumId = parseForumIdFromHref(anchor.getAttribute('href') || anchor.href || '');
-            const forumName = (anchor.textContent || '').trim();
-            if (forumId) {
-                return {
-                    forumId,
-                    forumName: forumName || TID_LABEL_MAP[forumId] || `FID ${forumId}`
-                };
-            }
-        }
-
-        const currentForumId = parseForumIdFromHref(location.href);
-        return {
-            forumId: currentForumId,
-            forumName: exactZoneName || TID_LABEL_MAP[currentForumId] || (currentForumId ? `FID ${currentForumId}` : '未知板块')
-        };
     };
 
     // ================= CSS 样式注入 =================
@@ -559,8 +769,6 @@
     const evaluateThreadRules = (tbody, link, title, url, authorName, authorUID, typeName, cb) => {
         tbody.classList.remove('custom-hidden');
         const isRuleActive = (rule) => rule.zone === 'all' || rule.zone === exactZoneName || rule.zone === configType;
-        const forumInfo = getThreadForumInfo(tbody);
-        const activeForumIds = Array.isArray(STATE.allowedForumIds) ? STATE.allowedForumIds.map(String) : [];
 
         let originalTitle = link.getAttribute('data-original-title');
         if (!originalTitle) {
@@ -571,11 +779,10 @@
         const matchedKeywordObj = STATE.blocked.find(r => isRuleActive(r) && originalTitle.includes(r.val));
         const matchedTagObj = STATE.blockedTags.find(r => isRuleActive(r) && (typeName.includes(r.val) || r.val === typeName));
         const matchedUserObj = STATE.blockedUsers.find(r => isRuleActive(r) && (authorName === r.val || authorUID === r.val));
-        const isFilteredByForum = activeForumIds.length > 0 && (!forumInfo.forumId || !activeForumIds.includes(String(forumInfo.forumId)));
 
-        if (matchedKeywordObj || matchedUserObj || matchedTagObj || isFilteredByForum) {
+        if (matchedKeywordObj || matchedUserObj || matchedTagObj) {
             tbody.classList.add('custom-hidden'); if (cb) cb.checked = false;
-            let reason = ''; if (isFilteredByForum) reason = `板块 [${forumInfo.forumName || forumInfo.forumId || '未知板块'}]`; else if (matchedTagObj) reason = `标签 [${matchedTagObj.val}]`; else if (matchedKeywordObj) reason = `标题 [${matchedKeywordObj.val}]`; else if (matchedUserObj) reason = `用户 [${matchedUserObj.val}]`;
+            let reason = ''; if (matchedTagObj) reason = `标签 [${matchedTagObj.val}]`; else if (matchedKeywordObj) reason = `标题 [${matchedKeywordObj.val}]`; else if (matchedUserObj) reason = `用户 [${matchedUserObj.val}]`;
             currentPageInterceptCount++; window.updateFloatCount(); addLog(originalTitle, url, reason);
         } else {
             const activeHighlights = STATE.highlighted.filter(r => isRuleActive(r) && originalTitle.includes(r.val)).sort((a,b) => b.val.length - a.val.length);
@@ -1123,84 +1330,6 @@
         btn.onclick = () => { const val = input.value.trim(); const scope = scopeSelect.value; if (val && !stateArray.find(r => r.val === val && r.zone === scope)) { stateArray.push({ val: val, zone: scope }); saveState(stateKey, stateArray); input.value = ''; render(); reapplyFilters(); } };
         wrap.append(inputRow, listDiv); return wrap;
     };
-    const createForumFilterManager = () => {
-        const wrap = document.createElement('div');
-        wrap.innerHTML = '<div style="font-weight:bold; font-size:13px; margin-bottom:5px;">🧭 只看指定板块</div><div style="font-size:12px; color:var(--f-log-time); margin-bottom:6px;">逻辑与搜索页一致：勾选后仅保留这些板块的帖子，未勾选时不过滤板块。</div>';
-
-        const toolsRow = document.createElement('div');
-        toolsRow.style.cssText = 'display:flex; gap:5px; margin-bottom:6px;';
-        const btnSelectCurrent = document.createElement('button');
-        btnSelectCurrent.innerText = '当前板块';
-        btnSelectCurrent.style.cssText = 'padding: 4px 8px; font-size:12px; cursor:pointer; background:#007bff; color:#fff; border:none; border-radius:3px;';
-        const btnClearForums = document.createElement('button');
-        btnClearForums.innerText = '清空';
-        btnClearForums.style.cssText = 'padding: 4px 8px; font-size:12px; cursor:pointer; background:#6c757d; color:#fff; border:none; border-radius:3px;';
-        toolsRow.append(btnSelectCurrent, btnClearForums);
-
-        const listDiv = document.createElement('div');
-        listDiv.style.cssText = 'display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:4px 8px; max-height:180px; overflow-y:auto; padding:6px; border:1px solid var(--f-border); border-radius:4px; background:var(--f-panel-bg);';
-        const summary = document.createElement('div');
-        summary.style.cssText = 'font-size:12px; color:var(--f-log-time); margin-top:6px; line-height:1.5;';
-
-        const renderSummary = () => {
-            if (!STATE.allowedForumIds.length) {
-                summary.innerHTML = '当前状态：<span style="color:#28a745;">不过滤板块</span>';
-                return;
-            }
-            const labels = STATE.allowedForumIds.map(id => TID_LABEL_MAP[id] || `FID ${id}`);
-            summary.innerHTML = `当前仅保留：<span style="color:#007bff;">${labels.join('、')}</span>`;
-        };
-
-        const render = () => {
-            listDiv.innerHTML = '';
-            DEFAULT_TID_OPTIONS.forEach(option => {
-                const label = document.createElement('label');
-                label.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;';
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.value = option.value;
-                checkbox.checked = STATE.allowedForumIds.includes(option.value);
-                checkbox.addEventListener('change', () => {
-                    if (checkbox.checked) {
-                        if (!STATE.allowedForumIds.includes(option.value)) STATE.allowedForumIds.push(option.value);
-                    } else {
-                        STATE.allowedForumIds = STATE.allowedForumIds.filter(id => id !== option.value);
-                    }
-                    saveState('custom_allowed_forum_ids', STATE.allowedForumIds);
-                    renderSummary();
-                    reapplyFilters();
-                });
-                const text = document.createElement('span');
-                text.innerText = option.label;
-                label.append(checkbox, text);
-                listDiv.appendChild(label);
-            });
-        };
-
-        btnSelectCurrent.onclick = () => {
-            const currentForumId = parseForumIdFromHref(location.href);
-            if (!currentForumId) return alert('当前页面未识别到板块 ID，无法一键选择。');
-            STATE.allowedForumIds = [String(currentForumId)];
-            saveState('custom_allowed_forum_ids', STATE.allowedForumIds);
-            render();
-            renderSummary();
-            reapplyFilters();
-        };
-
-        btnClearForums.onclick = () => {
-            STATE.allowedForumIds = [];
-            saveState('custom_allowed_forum_ids', STATE.allowedForumIds);
-            render();
-            renderSummary();
-            reapplyFilters();
-        };
-
-        render();
-        renderSummary();
-        wrap.append(toolsRow, listDiv, summary);
-        return wrap;
-    };
-    tabRules.appendChild(createForumFilterManager());
     tabRules.appendChild(createKeywordManager('🏷️ 屏蔽指定分类/标签', STATE.blockedTags, 'custom_blocked_tags', '完整标签名(如: 求助)'));
     tabRules.appendChild(createKeywordManager('🚫 屏蔽标题关键词', STATE.blocked, 'custom_blocked_keywords', '输入屏蔽词'));
     tabRules.appendChild(createKeywordManager('👤 屏蔽指定用户', STATE.blockedUsers, 'custom_blocked_users', '账号或UID'));
@@ -1212,12 +1341,12 @@
 
     // --- Tab 5: 数据 ---
     const tabData = document.createElement('div'); tabData.id = 'tab-data'; tabData.className = 'custom-tab-content'; tabData.innerHTML = `<div style="font-size:12px; color:var(--f-log-time); margin-bottom:10px;">您可以将当前所有的屏蔽规则、已读记录备份为本地文件，防止清理缓存后丢失。</div>`;
-    const btnExport = createBtn('📤 导出配置备份 (.json)', '#17a2b8'); btnExport.onclick = () => { const dataStr = JSON.stringify({ blocked: STATE.blocked, blockedUsers: STATE.blockedUsers, blockedTags: STATE.blockedTags, highlighted: STATE.highlighted, allowedForumIds: STATE.allowedForumIds, readLinks: STATE.readLinks, autoLoadNextPage: STATE.autoLoadNextPage, themeMode: STATE.themeMode, hideReadPosts: STATE.hideReadPosts, deepseekKey: STATE.deepseekKey }, null, 2); const blob = new Blob([dataStr], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `SHT_Script_Backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); };
+    const btnExport = createBtn('📤 导出配置备份 (.json)', '#17a2b8'); btnExport.onclick = () => { const dataStr = JSON.stringify({ blocked: STATE.blocked, blockedUsers: STATE.blockedUsers, blockedTags: STATE.blockedTags, highlighted: STATE.highlighted, readLinks: STATE.readLinks, autoLoadNextPage: STATE.autoLoadNextPage, themeMode: STATE.themeMode, hideReadPosts: STATE.hideReadPosts, deepseekKey: STATE.deepseekKey }, null, 2); const blob = new Blob([dataStr], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `SHT_Script_Backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); };
     const importInput = document.createElement('input'); importInput.type = 'file'; importInput.accept = '.json'; importInput.style.display = 'none';
-    importInput.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { const parsed = JSON.parse(ev.target.result); if (parsed.blocked) saveState('custom_blocked_keywords', migrateRules(parsed.blocked)); if (parsed.blockedUsers) saveState('custom_blocked_users', migrateRules(parsed.blockedUsers)); if (parsed.blockedTags) saveState('custom_blocked_tags', migrateRules(parsed.blockedTags)); if (parsed.highlighted) saveState('custom_highlight_keywords', migrateRules(parsed.highlighted)); if (parsed.allowedForumIds) saveState('custom_allowed_forum_ids', parsed.allowedForumIds.map(String)); if (parsed.readLinks) saveState('custom_read_links', parsed.readLinks); if (parsed.autoLoadNextPage !== undefined) saveState('custom_auto_load', parsed.autoLoadNextPage); if (parsed.themeMode !== undefined) saveState('custom_theme_mode', parsed.themeMode); if (parsed.hideReadPosts !== undefined) saveState('custom_hide_read', parsed.hideReadPosts); if (parsed.deepseekKey !== undefined) saveState('custom_deepseek_key', parsed.deepseekKey); alert('数据恢复成功！网页即将刷新...'); location.reload(); } catch(err) { alert('文件格式读取失败'); } }; reader.readAsText(file); };
+    importInput.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { const parsed = JSON.parse(ev.target.result); if (parsed.blocked) saveState('custom_blocked_keywords', migrateRules(parsed.blocked)); if (parsed.blockedUsers) saveState('custom_blocked_users', migrateRules(parsed.blockedUsers)); if (parsed.blockedTags) saveState('custom_blocked_tags', migrateRules(parsed.blockedTags)); if (parsed.highlighted) saveState('custom_highlight_keywords', migrateRules(parsed.highlighted)); if (parsed.readLinks) saveState('custom_read_links', parsed.readLinks); if (parsed.autoLoadNextPage !== undefined) saveState('custom_auto_load', parsed.autoLoadNextPage); if (parsed.themeMode !== undefined) saveState('custom_theme_mode', parsed.themeMode); if (parsed.hideReadPosts !== undefined) saveState('custom_hide_read', parsed.hideReadPosts); if (parsed.deepseekKey !== undefined) saveState('custom_deepseek_key', parsed.deepseekKey); alert('数据恢复成功！网页即将刷新...'); location.reload(); } catch(err) { alert('文件格式读取失败'); } }; reader.readAsText(file); };
     const btnImport = createBtn('📥 导入配置恢复', '#6c757d'); btnImport.onclick = () => importInput.click();
     const btnReset = createBtn('💥 彻底重置脚本 (清除所有缓存与配置)', '#dc3545'); btnReset.style.marginTop = '15px';
-    btnReset.onclick = () => { if (confirm('警告：此操作将清空所有屏蔽规则、已读记录、悬浮球位置以及文章缓存！\n强烈建议先点击上方的“导出配置”进行备份。\n\n确定要彻底重置并炸毁所有数据吗？')) { try { const keys = typeof GM_listValues === 'function' ? GM_listValues() : ['custom_blocked_keywords', 'custom_blocked_users', 'custom_blocked_tags', 'custom_highlight_keywords', 'custom_allowed_forum_ids', 'custom_read_links', 'custom_auto_load', 'custom_theme_mode', 'custom_panel_pos', 'custom_float_pos', 'custom_hide_read', 'custom_deepseek_key']; keys.forEach(k => { try { GM_deleteValue(k); } catch(e) { GM_setValue(k, ''); } }); } catch(e) {} try { indexedDB.deleteDatabase('SHT_Super_Cache'); indexedDB.deleteDatabase('SHT_Super_Cache_V2'); indexedDB.deleteDatabase('SHT_Super_Cache_V3'); indexedDB.deleteDatabase('SHT_Super_Cache_V4'); } catch(e) {} alert('💥 核心缓存与本地配置已全部炸毁！\n网页即将自动刷新，迎接纯净版...'); location.reload(); } };
+    btnReset.onclick = () => { if (confirm('警告：此操作将清空所有屏蔽规则、已读记录、悬浮球位置以及文章缓存！\n强烈建议先点击上方的“导出配置”进行备份。\n\n确定要彻底重置并炸毁所有数据吗？')) { try { const keys = typeof GM_listValues === 'function' ? GM_listValues() : ['custom_blocked_keywords', 'custom_blocked_users', 'custom_blocked_tags', 'custom_highlight_keywords', 'custom_read_links', 'custom_auto_load', 'custom_theme_mode', 'custom_panel_pos', 'custom_float_pos', 'custom_hide_read', 'custom_deepseek_key']; keys.forEach(k => { try { GM_deleteValue(k); } catch(e) { GM_setValue(k, ''); } }); } catch(e) {} try { indexedDB.deleteDatabase('SHT_Super_Cache'); indexedDB.deleteDatabase('SHT_Super_Cache_V2'); indexedDB.deleteDatabase('SHT_Super_Cache_V3'); indexedDB.deleteDatabase('SHT_Super_Cache_V4'); } catch(e) {} alert('💥 核心缓存与本地配置已全部炸毁！\n网页即将自动刷新，迎接纯净版...'); location.reload(); } };
     tabData.append(btnExport, btnImport, importInput, btnReset);
 
     contentArea.append(tabActions, tabPool, tabRules, tabLogs, tabData); mainWindow.append(header, tabBar, contentArea); document.body.appendChild(mainWindow);
