@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助
 // @namespace    http://tampermonkey.net/
-// @version      20.37
+// @version      20.36
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -58,52 +58,6 @@
         'default': { maxImg: 2, res: ['magnet', 'ed2k', 'torrent', 'password', '115'], autoPreview: true }
     };
     const CONF = ZONE_CONFIG[configType] || ZONE_CONFIG['default'];
-
-    const DEFAULT_TID_OPTIONS = [
-        { value: 95, label: "综合区" },
-        { value: 166, label: "AI区" },
-        { value: 141, label: "原创区" },
-        { value: 142, label: "转帖区" },
-        { value: 96, label: "投诉区" },
-        { value: 97, label: "出售区" },
-        { value: 143, label: "悬赏区" },
-        { value: 2, label: "国产原创" },
-        { value: 36, label: "亚洲无码" },
-        { value: 37, label: "亚洲有码" },
-        { value: 103, label: "中文字幕" },
-        { value: 107, label: "三级写真" },
-        { value: 160, label: "VR视频区" },
-        { value: 104, label: "素人有码" },
-        { value: 38, label: "欧美无码" },
-        { value: 151, label: "4K原版" },
-        { value: 152, label: "韩国主播" },
-        { value: 39, label: "动漫原创" },
-        { value: 154, label: "文学区原创人生" },
-        { value: 135, label: "文学区乱伦人妻" },
-        { value: 137, label: "文学区青春校园" },
-        { value: 138, label: "文学区武侠玄幻" },
-        { value: 136, label: "文学区激情都市" },
-        { value: 139, label: "文学区TXT下载" },
-        { value: 145, label: "原档自提字幕区" },
-        { value: 146, label: "原档自译字幕区" },
-        { value: 121, label: "原档字幕分享区" },
-        { value: 159, label: "原档新作区" },
-        { value: 41, label: "在线国产" },
-        { value: 109, label: "在线中文字幕" },
-        { value: 42, label: "在线日韩无码" },
-        { value: 43, label: "在线日韩有码" },
-        { value: 44, label: "在线欧美风情" },
-        { value: 45, label: "在线卡通动漫" },
-        { value: 46, label: "在线剧情三级" },
-        { value: 155, label: "图区原创自拍" },
-        { value: 125, label: "图区转帖自拍" },
-        { value: 50, label: "图区华人街拍" },
-        { value: 48, label: "图区亚洲性爱" },
-        { value: 49, label: "图区欧美性爱" },
-        { value: 117, label: "图区卡通动漫" },
-        { value: 165, label: "图区套图下载" },
-    ];
-    const DEFAULT_EXCLUDE_OPTIONS = ["度盘", "夸克", "内容隐藏", "搬运", "SHA1"];
 
     // ================= 115 接口与交互优化 =================
     window.check115Auth = () => {
@@ -186,28 +140,6 @@
 
     const getTid = (url) => { let m = url.match(/tid=(\d+)/); if (m) return m[1]; m = url.match(/thread-(\d+)/); if (m) return m[1]; return url; };
     const migrateRules = (arr) => { if (!Array.isArray(arr)) return []; return arr.map(item => { if (typeof item === 'string') return { val: item, zone: 'all' }; return item; }); };
-    const normalizeStringArray = (arr, fallback = []) => Array.isArray(arr) ? [...new Set(arr.map(item => `${item}`.trim()).filter(Boolean))] : [...fallback];
-    const currentPageFid = (() => {
-        const byUrl = location.href.match(/[?&]fid=(\d+)/) || location.href.match(/forum-(\d+)-/);
-        if (byUrl) return byUrl[1];
-        const forumLink = Array.from(document.querySelectorAll('#pt a, .z a')).find((a) => /(?:fid=|forum-)(\d+)/.test(a.href));
-        if (!forumLink) return '';
-        const matched = forumLink.href.match(/[?&]fid=(\d+)/) || forumLink.href.match(/forum-(\d+)-/);
-        return matched ? matched[1] : '';
-    })();
-    const doesTIDGroupMatch = (href, TIDGroup) => {
-        if (!href || !TIDGroup.length) return false;
-        return TIDGroup.some((tid) => href.includes(`fid=${tid}`) || href.includes(`forum-${tid}`));
-    };
-    const isExcludedByKeywordText = (text, excludeGroup) => {
-        if (!text) return false;
-        const normalizedText = text.toLowerCase();
-        return excludeGroup.some((keyword) => normalizedText.includes(String(keyword).toLowerCase()));
-    };
-    const getThreadForumHref = (tbody) => {
-        const forumLink = tbody.querySelector('a.xi1[href*="fid="], a.xi1[href*="forum-"], th em a[href*="fid="], th em a[href*="forum-"], a[href*="forumdisplay&fid="], a[href*="forum-"]');
-        return forumLink ? forumLink.href : (currentPageFid ? `forum.php?mod=forumdisplay&fid=${currentPageFid}` : '');
-    };
 
     let currentPageInterceptCount = 0;
     const STATE = {
@@ -215,8 +147,6 @@
         blockedUsers: migrateRules(GM_getValue('custom_blocked_users', [])),
         blockedTags: migrateRules(GM_getValue('custom_blocked_tags', [])),
         highlighted: migrateRules(GM_getValue('custom_highlight_keywords', [])),
-        searchFilterExclude: normalizeStringArray(GM_getValue('custom_search_filter_exclude', [])),
-        searchFilterTids: normalizeStringArray(GM_getValue('custom_search_filter_tids', [])),
         readLinks: GM_getValue('custom_read_links', []) || [],
         interceptionLog: [],
         autoLoadNextPage: GM_getValue('custom_auto_load', false),
@@ -229,7 +159,6 @@
 
     GM_setValue('custom_blocked_keywords', STATE.blocked); GM_setValue('custom_blocked_users', STATE.blockedUsers);
     GM_setValue('custom_blocked_tags', STATE.blockedTags); GM_setValue('custom_highlight_keywords', STATE.highlighted);
-    GM_setValue('custom_search_filter_exclude', STATE.searchFilterExclude); GM_setValue('custom_search_filter_tids', STATE.searchFilterTids);
 
     if (Array.isArray(STATE.readLinks)) STATE.readLinks = [...new Set(STATE.readLinks.map(getTid))]; else STATE.readLinks = [];
     const saveState = (key, value) => { GM_setValue(key, value); }; document.documentElement.setAttribute('data-custom-theme', STATE.themeMode);
@@ -282,7 +211,7 @@
 
         .custom-inline-preview-row td { padding-top: 4px; padding-bottom: 8px; }
         .custom-inline-preview { display: flex; gap: 5px; flex-wrap: wrap; }
-        .custom-inline-preview img { max-height: 250px !important; max-width: 375px !important; object-fit: cover !important; border-radius: 4px !important; border: 1px solid var(--f-border) !important; cursor: pointer !important; transition: opacity 0.2s; }
+        .custom-inline-preview img { max-height: 300px !important; max-width: 450px !important; object-fit: cover !important; border-radius: 4px !important; border: 1px solid var(--f-border) !important; cursor: pointer !important; transition: opacity 0.2s; }
         .custom-inline-preview img:hover { opacity: 0.8; }
 
         .btn-115-inline { font-size:12px; cursor:pointer; padding:4px 8px; background-color: #6f42c1; color: white; border: none; border-radius: 3px; font-weight:bold; transition: background-color 0.2s, opacity 0.2s; white-space: nowrap; vertical-align: middle; }
@@ -557,11 +486,6 @@
             link.setAttribute('data-original-title', originalTitle);
         }
 
-        const forumHref = getThreadForumHref(tbody);
-        const searchText = [originalTitle, typeName, tbody.innerText || ''].filter(Boolean).join('\n');
-        const isFilteredByTid = STATE.searchFilterTids.length > 0 && !doesTIDGroupMatch(forumHref, STATE.searchFilterTids);
-        const isFilteredByKeyword = STATE.searchFilterExclude.length > 0 && isExcludedByKeywordText(searchText, STATE.searchFilterExclude);
-
         const matchedKeywordObj = STATE.blocked.find(r => isRuleActive(r) && originalTitle.includes(r.val));
         const matchedTagObj = STATE.blockedTags.find(r => isRuleActive(r) && (typeName.includes(r.val) || r.val === typeName));
         const matchedUserObj = STATE.blockedUsers.find(r => isRuleActive(r) && (authorName === r.val || authorUID === r.val));
@@ -570,8 +494,6 @@
             tbody.classList.add('custom-hidden'); if (cb) cb.checked = false;
             let reason = ''; if (matchedTagObj) reason = `标签 [${matchedTagObj.val}]`; else if (matchedKeywordObj) reason = `标题 [${matchedKeywordObj.val}]`; else if (matchedUserObj) reason = `用户 [${matchedUserObj.val}]`;
             currentPageInterceptCount++; window.updateFloatCount(); addLog(originalTitle, url, reason);
-        } else if (isFilteredByTid || isFilteredByKeyword) {
-            tbody.classList.add('custom-hidden'); if (cb) cb.checked = false;
         } else {
             const activeHighlights = STATE.highlighted.filter(r => isRuleActive(r) && originalTitle.includes(r.val)).sort((a,b) => b.val.length - a.val.length);
             if (activeHighlights.length > 0) {
@@ -1088,72 +1010,6 @@
 
     // --- Tab 3: 规则 ---
     const tabRules = document.createElement('div'); tabRules.id = 'tab-rules'; tabRules.className = 'custom-tab-content';
-    const createSearchFilterManager = () => {
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'border:1px solid var(--f-border); border-radius:6px; padding:10px; background:var(--f-panel-bg);';
-        wrap.innerHTML = '<div style="font-weight:bold; font-size:13px; margin-bottom:5px;">🔎 筛选搜索</div><div style="font-size:12px; color:var(--f-log-time); line-height:1.5; margin-bottom:8px;">仿照搜索脚本提供快捷筛选：可按常用排除关键字隐藏帖子，也可限定只看指定板块，适用于搜索结果页、导读页和混合列表页。</div>';
-
-        const createCheckboxGroup = (groupId, titleText, options, stateKey) => {
-            const group = document.createElement('div');
-            group.style.cssText = 'margin-bottom:8px;';
-            const title = document.createElement('div');
-            title.style.cssText = 'font-size:12px; font-weight:bold; margin-bottom:4px;';
-            title.innerText = titleText;
-            const list = document.createElement('div');
-            list.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; max-height:110px; overflow-y:auto; padding:2px;';
-
-            options.forEach((option) => {
-                const value = String(option.value);
-                const label = document.createElement('label');
-                label.style.cssText = 'display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:2px 6px; border:1px solid var(--f-border); border-radius:999px; cursor:pointer; background:var(--f-bg);';
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.value = value;
-                checkbox.checked = STATE[stateKey].includes(value);
-                checkbox.onchange = () => {
-                    STATE[stateKey] = Array.from(list.querySelectorAll('input:checked')).map((input) => input.value);
-                    saveState(`custom_search_filter_${groupId}`, STATE[stateKey]);
-                    reapplyFilters();
-                };
-                const textNode = document.createElement('span');
-                textNode.innerText = option.label;
-                label.append(checkbox, textNode);
-                list.appendChild(label);
-            });
-
-            group.append(title, list);
-            return group;
-        };
-
-        const tidOptions = DEFAULT_TID_OPTIONS.filter((item, index, arr) => arr.findIndex((entry) => String(entry.value) === String(item.value)) === index);
-        wrap.appendChild(createCheckboxGroup('exclude', '排除关键字', DEFAULT_EXCLUDE_OPTIONS.map((option) => ({ label: option, value: option })), 'searchFilterExclude'));
-        wrap.appendChild(createCheckboxGroup('tids', '只看板块', tidOptions, 'searchFilterTids'));
-
-        const footer = document.createElement('div');
-        footer.style.cssText = 'display:flex; justify-content:space-between; align-items:center; gap:8px;';
-        const summary = document.createElement('div');
-        summary.style.cssText = 'font-size:12px; color:var(--f-log-time);';
-        const clearBtn = document.createElement('button');
-        clearBtn.innerText = '清空筛选';
-        clearBtn.style.cssText = 'padding:2px 8px; background-color:#dc3545; color:#fff; border:none; border-radius:3px; cursor:pointer; font-size:12px;';
-        const updateSummary = () => {
-            summary.innerText = `已启用：${STATE.searchFilterExclude.length} 个关键字，${STATE.searchFilterTids.length} 个板块`;
-        };
-        clearBtn.onclick = () => {
-            STATE.searchFilterExclude = [];
-            STATE.searchFilterTids = [];
-            saveState('custom_search_filter_exclude', STATE.searchFilterExclude);
-            saveState('custom_search_filter_tids', STATE.searchFilterTids);
-            wrap.querySelectorAll('input[type="checkbox"]').forEach((input) => { input.checked = false; });
-            updateSummary();
-            reapplyFilters();
-        };
-        wrap.addEventListener('change', updateSummary);
-        updateSummary();
-        footer.append(summary, clearBtn);
-        wrap.appendChild(footer);
-        return wrap;
-    };
     const createKeywordManager = (titleText, stateArray, stateKey, placeholderText) => {
         const wrap = document.createElement('div'); wrap.innerHTML = `<div style="font-weight:bold; font-size:13px; margin-bottom:5px;">${titleText}</div>`;
         const inputRow = document.createElement('div'); inputRow.style.cssText = 'display: flex; gap: 5px;';
@@ -1184,7 +1040,6 @@
         btn.onclick = () => { const val = input.value.trim(); const scope = scopeSelect.value; if (val && !stateArray.find(r => r.val === val && r.zone === scope)) { stateArray.push({ val: val, zone: scope }); saveState(stateKey, stateArray); input.value = ''; render(); reapplyFilters(); } };
         wrap.append(inputRow, listDiv); return wrap;
     };
-    tabRules.appendChild(createSearchFilterManager());
     tabRules.appendChild(createKeywordManager('🏷️ 屏蔽指定分类/标签', STATE.blockedTags, 'custom_blocked_tags', '完整标签名(如: 求助)'));
     tabRules.appendChild(createKeywordManager('🚫 屏蔽标题关键词', STATE.blocked, 'custom_blocked_keywords', '输入屏蔽词'));
     tabRules.appendChild(createKeywordManager('👤 屏蔽指定用户', STATE.blockedUsers, 'custom_blocked_users', '账号或UID'));
@@ -1196,12 +1051,12 @@
 
     // --- Tab 5: 数据 ---
     const tabData = document.createElement('div'); tabData.id = 'tab-data'; tabData.className = 'custom-tab-content'; tabData.innerHTML = `<div style="font-size:12px; color:var(--f-log-time); margin-bottom:10px;">您可以将当前所有的屏蔽规则、已读记录备份为本地文件，防止清理缓存后丢失。</div>`;
-    const btnExport = createBtn('📤 导出配置备份 (.json)', '#17a2b8'); btnExport.onclick = () => { const dataStr = JSON.stringify({ blocked: STATE.blocked, blockedUsers: STATE.blockedUsers, blockedTags: STATE.blockedTags, highlighted: STATE.highlighted, searchFilterExclude: STATE.searchFilterExclude, searchFilterTids: STATE.searchFilterTids, readLinks: STATE.readLinks, autoLoadNextPage: STATE.autoLoadNextPage, themeMode: STATE.themeMode, hideReadPosts: STATE.hideReadPosts, deepseekKey: STATE.deepseekKey }, null, 2); const blob = new Blob([dataStr], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `SHT_Script_Backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); };
+    const btnExport = createBtn('📤 导出配置备份 (.json)', '#17a2b8'); btnExport.onclick = () => { const dataStr = JSON.stringify({ blocked: STATE.blocked, blockedUsers: STATE.blockedUsers, blockedTags: STATE.blockedTags, highlighted: STATE.highlighted, readLinks: STATE.readLinks, autoLoadNextPage: STATE.autoLoadNextPage, themeMode: STATE.themeMode, hideReadPosts: STATE.hideReadPosts, deepseekKey: STATE.deepseekKey }, null, 2); const blob = new Blob([dataStr], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `SHT_Script_Backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); };
     const importInput = document.createElement('input'); importInput.type = 'file'; importInput.accept = '.json'; importInput.style.display = 'none';
-    importInput.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { const parsed = JSON.parse(ev.target.result); if (parsed.blocked) saveState('custom_blocked_keywords', migrateRules(parsed.blocked)); if (parsed.blockedUsers) saveState('custom_blocked_users', migrateRules(parsed.blockedUsers)); if (parsed.blockedTags) saveState('custom_blocked_tags', migrateRules(parsed.blockedTags)); if (parsed.highlighted) saveState('custom_highlight_keywords', migrateRules(parsed.highlighted)); if (parsed.searchFilterExclude) saveState('custom_search_filter_exclude', normalizeStringArray(parsed.searchFilterExclude)); if (parsed.searchFilterTids) saveState('custom_search_filter_tids', normalizeStringArray(parsed.searchFilterTids)); if (parsed.readLinks) saveState('custom_read_links', parsed.readLinks); if (parsed.autoLoadNextPage !== undefined) saveState('custom_auto_load', parsed.autoLoadNextPage); if (parsed.themeMode !== undefined) saveState('custom_theme_mode', parsed.themeMode); if (parsed.hideReadPosts !== undefined) saveState('custom_hide_read', parsed.hideReadPosts); if (parsed.deepseekKey !== undefined) saveState('custom_deepseek_key', parsed.deepseekKey); alert('数据恢复成功！网页即将刷新...'); location.reload(); } catch(err) { alert('文件格式读取失败'); } }; reader.readAsText(file); };
+    importInput.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { const parsed = JSON.parse(ev.target.result); if (parsed.blocked) saveState('custom_blocked_keywords', migrateRules(parsed.blocked)); if (parsed.blockedUsers) saveState('custom_blocked_users', migrateRules(parsed.blockedUsers)); if (parsed.blockedTags) saveState('custom_blocked_tags', migrateRules(parsed.blockedTags)); if (parsed.highlighted) saveState('custom_highlight_keywords', migrateRules(parsed.highlighted)); if (parsed.readLinks) saveState('custom_read_links', parsed.readLinks); if (parsed.autoLoadNextPage !== undefined) saveState('custom_auto_load', parsed.autoLoadNextPage); if (parsed.themeMode !== undefined) saveState('custom_theme_mode', parsed.themeMode); if (parsed.hideReadPosts !== undefined) saveState('custom_hide_read', parsed.hideReadPosts); if (parsed.deepseekKey !== undefined) saveState('custom_deepseek_key', parsed.deepseekKey); alert('数据恢复成功！网页即将刷新...'); location.reload(); } catch(err) { alert('文件格式读取失败'); } }; reader.readAsText(file); };
     const btnImport = createBtn('📥 导入配置恢复', '#6c757d'); btnImport.onclick = () => importInput.click();
     const btnReset = createBtn('💥 彻底重置脚本 (清除所有缓存与配置)', '#dc3545'); btnReset.style.marginTop = '15px';
-    btnReset.onclick = () => { if (confirm('警告：此操作将清空所有屏蔽规则、已读记录、悬浮球位置以及文章缓存！\n强烈建议先点击上方的“导出配置”进行备份。\n\n确定要彻底重置并炸毁所有数据吗？')) { try { const keys = typeof GM_listValues === 'function' ? GM_listValues() : ['custom_blocked_keywords', 'custom_blocked_users', 'custom_blocked_tags', 'custom_highlight_keywords', 'custom_search_filter_exclude', 'custom_search_filter_tids', 'custom_read_links', 'custom_auto_load', 'custom_theme_mode', 'custom_panel_pos', 'custom_float_pos', 'custom_hide_read', 'custom_deepseek_key']; keys.forEach(k => { try { GM_deleteValue(k); } catch(e) { GM_setValue(k, ''); } }); } catch(e) {} try { indexedDB.deleteDatabase('SHT_Super_Cache'); indexedDB.deleteDatabase('SHT_Super_Cache_V2'); indexedDB.deleteDatabase('SHT_Super_Cache_V3'); indexedDB.deleteDatabase('SHT_Super_Cache_V4'); } catch(e) {} alert('💥 核心缓存与本地配置已全部炸毁！\n网页即将自动刷新，迎接纯净版...'); location.reload(); } };
+    btnReset.onclick = () => { if (confirm('警告：此操作将清空所有屏蔽规则、已读记录、悬浮球位置以及文章缓存！\n强烈建议先点击上方的“导出配置”进行备份。\n\n确定要彻底重置并炸毁所有数据吗？')) { try { const keys = typeof GM_listValues === 'function' ? GM_listValues() : ['custom_blocked_keywords', 'custom_blocked_users', 'custom_blocked_tags', 'custom_highlight_keywords', 'custom_read_links', 'custom_auto_load', 'custom_theme_mode', 'custom_panel_pos', 'custom_float_pos', 'custom_hide_read', 'custom_deepseek_key']; keys.forEach(k => { try { GM_deleteValue(k); } catch(e) { GM_setValue(k, ''); } }); } catch(e) {} try { indexedDB.deleteDatabase('SHT_Super_Cache'); indexedDB.deleteDatabase('SHT_Super_Cache_V2'); indexedDB.deleteDatabase('SHT_Super_Cache_V3'); indexedDB.deleteDatabase('SHT_Super_Cache_V4'); } catch(e) {} alert('💥 核心缓存与本地配置已全部炸毁！\n网页即将自动刷新，迎接纯净版...'); location.reload(); } };
     tabData.append(btnExport, btnImport, importInput, btnReset);
 
     contentArea.append(tabActions, tabPool, tabRules, tabLogs, tabData); mainWindow.append(header, tabBar, contentArea); document.body.appendChild(mainWindow);
