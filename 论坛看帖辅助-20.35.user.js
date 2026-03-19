@@ -51,11 +51,11 @@
 
     const ZONE_CONFIG = {
         'bt_movie': { maxImg: 2, res: ['magnet', 'torrent'], autoPreview: true },
-        'general': { maxImg: 2, res: ['magnet', 'ed2k', 'quark', 'baidu', 'thunder', '115', 'torrent', 'password'], autoPreview: false },
-        'repost': { maxImg: 2, res: ['baidu', 'magnet', 'thunder', '115', 'torrent', 'password'], autoPreview: false },
-        'ai_sale': { maxImg: 2, res: ['password'], hideHoverWarn: true, forceImgOnLock: true, autoPreview: false },
-        'netizen_original': { maxImg: 2, res: ['magnet', 'ed2k', 'torrent', 'password', 'baidu', 'quark', 'thunder', '115'], hideHoverWarn: true, forceImgOnLock: true, autoPreview: false },
-        'default': { maxImg: 2, res: ['magnet', 'ed2k', 'torrent', 'password', '115'], autoPreview: false }
+        'general': { maxImg: 2, res: ['magnet', 'ed2k', 'quark', 'baidu', 'thunder', '115', 'torrent', 'password'], autoPreview: true },
+        'repost': { maxImg: 2, res: ['baidu', 'magnet', 'thunder', '115', 'torrent', 'password'], autoPreview: true },
+        'ai_sale': { maxImg: 2, res: ['password'], hideHoverWarn: true, forceImgOnLock: true, autoPreview: true },
+        'netizen_original': { maxImg: 2, res: ['magnet', 'ed2k', 'torrent', 'password', 'baidu', 'quark', 'thunder', '115'], hideHoverWarn: true, forceImgOnLock: true, autoPreview: true },
+        'default': { maxImg: 2, res: ['magnet', 'ed2k', 'torrent', 'password', '115'], autoPreview: true }
     };
     const CONF = ZONE_CONFIG[configType] || ZONE_CONFIG['default'];
 
@@ -210,7 +210,7 @@
         .custom-viewed-tag { background: #409EFF; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 12px; margin-left: 8px; font-weight: normal; vertical-align: middle; }
 
         .custom-inline-preview { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
-        .custom-inline-preview img { max-height: 100px !important; max-width: 150px !important; object-fit: cover !important; border-radius: 4px !important; border: 1px solid var(--f-border) !important; cursor: pointer !important; transition: opacity 0.2s; }
+        .custom-inline-preview img { max-height: 250px !important; max-width: 375px !important; object-fit: cover !important; border-radius: 4px !important; border: 1px solid var(--f-border) !important; cursor: pointer !important; transition: opacity 0.2s; }
         .custom-inline-preview img:hover { opacity: 0.8; }
 
         .btn-115-inline { font-size:12px; cursor:pointer; padding:4px 8px; background-color: #6f42c1; color: white; border: none; border-radius: 3px; font-weight:bold; transition: background-color 0.2s, opacity 0.2s; white-space: nowrap; vertical-align: middle; }
