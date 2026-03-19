@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助
 // @namespace    http://tampermonkey.net/
-// @version      20.36
+// @version      20.37
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -48,6 +48,211 @@
     let exactZoneName = '未知版块';
     const ptLinks = document.querySelectorAll('#pt .z a, #pt a');
     if (ptLinks.length > 0) { exactZoneName = ptLinks[ptLinks.length - 1].innerText.trim(); }
+
+    const DEFAULT_TID_OPTIONS = [
+        { value: '95', label: '综合区' },
+        { value: '166', label: 'AI区' },
+        { value: '141', label: '原创区' },
+        { value: '142', label: '转帖区' },
+        { value: '96', label: '投诉区' },
+        { value: '97', label: '出售区' },
+        { value: '143', label: '悬赏区' },
+        { value: '2', label: '国产原创' },
+        { value: '36', label: '亚洲无码' },
+        { value: '37', label: '亚洲有码' },
+        { value: '103', label: '中文字幕' },
+        { value: '107', label: '三级写真' },
+        { value: '160', label: 'VR视频区' },
+        { value: '104', label: '素人有码' },
+        { value: '38', label: '欧美无码' },
+        { value: '151', label: '4K原版' },
+        { value: '152', label: '韩国主播' },
+        { value: '39', label: '动漫原创' },
+        { value: '154', label: '文学区原创人生' },
+        { value: '135', label: '文学区乱伦人妻' },
+        { value: '137', label: '文学区青春校园' },
+        { value: '138', label: '文学区武侠玄幻' },
+        { value: '136', label: '文学区激情都市' },
+        { value: '139', label: '文学区TXT下载' },
+        { value: '145', label: '原档自提字幕区' },
+        { value: '146', label: '原档自译字幕区' },
+        { value: '121', label: '原档字幕分享区' },
+        { value: '159', label: '原档新作区' },
+        { value: '41', label: '在线国产自拍' },
+        { value: '109', label: '在线中文字幕' },
+        { value: '42', label: '在线日韩无码' },
+        { value: '43', label: '在线日韩有码' },
+        { value: '44', label: '在线欧美风情' },
+        { value: '45', label: '在线卡通动漫' },
+        { value: '46', label: '在线剧情三级' },
+        { value: '155', label: '图区原创自拍' },
+        { value: '125', label: '图区转帖自拍' },
+        { value: '50', label: '图区华人街拍' },
+        { value: '48', label: '图区亚洲性爱' },
+        { value: '49', label: '图区欧美性爱' },
+        { value: '117', label: '图区卡通动漫' },
+        { value: '165', label: '图区套图下载' },
+    ];
+
+    const isSearchResultPage = /search\.php\?mod=forum/.test(location.href) && !!document.querySelector('#threadlist .pbw');
+    if (isSearchResultPage) {
+        const getJSONValue = (key, defaultValue) => {
+            const value = GM_getValue(key, defaultValue);
+            try {
+                return JSON.parse(value);
+            } catch (error) {
+                return JSON.parse(defaultValue);
+            }
+        };
+        const getSearchFilterSettings = () => ({
+            TIDGroup: getJSONValue('TIDGroup', '[]')
+        });
+        const doesTIDGroupMatch = (aElement, TIDGroup) => {
+            const href = (aElement.getAttribute('href') || '').toLowerCase();
+            return TIDGroup.some((tid) => href.includes(`fid=${tid}`) || href.includes(`forum-${tid}`));
+        };
+        const filterSearchPageResults = (settings = getSearchFilterSettings()) => {
+            document.querySelectorAll('#threadlist .pbw').forEach((pbw) => {
+                let shouldDisplay = true;
+                if (settings.TIDGroup && settings.TIDGroup.length) {
+                    const boardLink = pbw.querySelector('.xi1');
+                    shouldDisplay = !!boardLink && doesTIDGroupMatch(boardLink, settings.TIDGroup);
+                }
+                pbw.style.display = shouldDisplay ? 'block' : 'none';
+            });
+        };
+        const parseSearchBoardOptions = () => {
+            const presentMap = new Map();
+            document.querySelectorAll('#threadlist .pbw .xi1').forEach((link) => {
+                const href = link.getAttribute('href') || '';
+                const match = href.match(/(?:fid=|forum-)(\d+)/);
+                if (!match) return;
+                const fid = match[1];
+                if (!presentMap.has(fid)) {
+                    presentMap.set(fid, {
+                        value: fid,
+                        label: link.textContent.trim() || `板块 ${fid}`
+                    });
+                }
+            });
+            const ordered = DEFAULT_TID_OPTIONS.filter((option) => presentMap.has(option.value)).map((option) => ({
+                value: option.value,
+                label: presentMap.get(option.value)?.label || option.label
+            }));
+            presentMap.forEach((option, fid) => {
+                if (!ordered.some((item) => item.value === fid)) ordered.push(option);
+            });
+            return ordered;
+        };
+        const injectSearchFilterButton = () => {
+            const resultHeader = document.querySelector('.sttl h2') || document.querySelector('.sttl') || document.querySelector('#threadlist');
+            const threadList = document.querySelector('#threadlist');
+            if (!resultHeader || !threadList) return;
+
+            GM_addStyle(`
+                .custom-search-filter-wrap { margin-top: 10px; }
+                .custom-search-filter-btn {
+                    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+                    padding: 6px 14px; border: 1px solid #d58fb8; border-radius: 999px;
+                    background: linear-gradient(135deg, #fff4fa 0%, #ffeaf5 100%);
+                    color: #8f2a90; font-size: 13px; font-weight: 700;
+                }
+                .custom-search-filter-btn:hover { background: linear-gradient(135deg, #ffeaf5 0%, #ffd7ea 100%); }
+                .custom-search-filter-panel {
+                    display: none; margin-top: 10px; padding: 12px; border: 1px solid #f0bfd8; border-radius: 10px;
+                    background: #fff9fc; box-shadow: 0 6px 18px rgba(143, 42, 144, 0.08);
+                }
+                .custom-search-filter-panel.active { display: block; }
+                .custom-search-filter-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+                .custom-search-filter-tool {
+                    cursor: pointer; padding: 4px 10px; border-radius: 999px;
+                    border: 1px solid #e2b2cb; background: #fff; color: #8f2a90; font-size: 12px;
+                }
+                .custom-search-filter-list { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 8px; }
+                .custom-search-filter-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #333; cursor: pointer; }
+                .custom-search-filter-status { font-size: 12px; color: #666; }
+            `);
+
+            const boardOptions = parseSearchBoardOptions();
+            if (!boardOptions.length) return;
+
+            const wrap = document.createElement('div');
+            wrap.className = 'custom-search-filter-wrap';
+            wrap.innerHTML = `
+                <button type="button" class="custom-search-filter-btn">🧭 筛选搜索结果</button>
+                <div class="custom-search-filter-panel">
+                    <div class="custom-search-filter-tools">
+                        <button type="button" class="custom-search-filter-tool" data-action="select-all">全选</button>
+                        <button type="button" class="custom-search-filter-tool" data-action="clear">清空</button>
+                    </div>
+                    <div class="custom-search-filter-list"></div>
+                    <div class="custom-search-filter-status"></div>
+                </div>
+            `;
+
+            resultHeader.parentNode.appendChild(wrap);
+
+            const toggleBtn = wrap.querySelector('.custom-search-filter-btn');
+            const panel = wrap.querySelector('.custom-search-filter-panel');
+            const list = wrap.querySelector('.custom-search-filter-list');
+            const status = wrap.querySelector('.custom-search-filter-status');
+
+            const renderStatus = () => {
+                const settings = getSearchFilterSettings();
+                const visibleCount = Array.from(document.querySelectorAll('#threadlist .pbw')).filter((pbw) => pbw.style.display !== 'none').length;
+                if (!settings.TIDGroup.length) {
+                    status.textContent = `当前状态：未启用板块筛选，显示全部 ${visibleCount} 条结果。`;
+                    return;
+                }
+                const labels = boardOptions.filter((option) => settings.TIDGroup.includes(option.value)).map((option) => option.label);
+                status.textContent = `当前只看：${labels.join('、')}（显示 ${visibleCount} 条）`;
+            };
+
+            const syncCheckboxes = () => {
+                const settings = getSearchFilterSettings();
+                list.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+                    checkbox.checked = settings.TIDGroup.includes(checkbox.value);
+                });
+                renderStatus();
+            };
+
+            boardOptions.forEach((option) => {
+                const label = document.createElement('label');
+                label.className = 'custom-search-filter-item';
+                label.innerHTML = `<input type="checkbox" value="${option.value}"><span>${option.label}</span>`;
+                label.querySelector('input').addEventListener('change', () => {
+                    const selectedValues = Array.from(list.querySelectorAll('input:checked')).map((input) => input.value);
+                    GM_setValue('TIDGroup', JSON.stringify(selectedValues));
+                    filterSearchPageResults(getSearchFilterSettings());
+                    syncCheckboxes();
+                });
+                list.appendChild(label);
+            });
+
+            wrap.addEventListener('click', (event) => {
+                const actionBtn = event.target.closest('[data-action]');
+                if (!actionBtn) return;
+                const action = actionBtn.dataset.action;
+                if (action === 'select-all') {
+                    GM_setValue('TIDGroup', JSON.stringify(boardOptions.map((option) => option.value)));
+                } else if (action === 'clear') {
+                    GM_setValue('TIDGroup', JSON.stringify([]));
+                }
+                filterSearchPageResults(getSearchFilterSettings());
+                syncCheckboxes();
+            });
+
+            toggleBtn.addEventListener('click', () => {
+                panel.classList.toggle('active');
+            });
+
+            filterSearchPageResults(getSearchFilterSettings());
+            syncCheckboxes();
+        };
+
+        injectSearchFilterButton();
+        return;
+    }
 
     const ZONE_CONFIG = {
         'bt_movie': { maxImg: 2, res: ['magnet', 'torrent'], autoPreview: true },
