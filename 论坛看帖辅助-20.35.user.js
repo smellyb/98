@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助
 // @namespace    http://tampermonkey.net/
-// @version      20.35
+// @version      20.37
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -58,6 +58,19 @@
         'default': { maxImg: 2, res: ['magnet', 'ed2k', 'torrent', 'password', '115'], autoPreview: true }
     };
     const CONF = ZONE_CONFIG[configType] || ZONE_CONFIG['default'];
+    const SEARCH_TID_OPTIONS = [
+        { value: '95', label: '综合区' }, { value: '166', label: 'AI区' }, { value: '141', label: '原创区' }, { value: '142', label: '转帖区' },
+        { value: '96', label: '投诉区' }, { value: '97', label: '出售区' }, { value: '143', label: '悬赏区' }, { value: '2', label: '国产原创' },
+        { value: '36', label: '亚洲无码' }, { value: '37', label: '亚洲有码' }, { value: '103', label: '中文字幕' }, { value: '107', label: '三级写真' },
+        { value: '160', label: 'VR视频区' }, { value: '104', label: '素人有码' }, { value: '38', label: '欧美无码' }, { value: '151', label: '4K原版' },
+        { value: '152', label: '韩国主播' }, { value: '39', label: '动漫原创' }, { value: '154', label: '文学区原创人生' }, { value: '135', label: '文学区乱伦人妻' },
+        { value: '137', label: '文学区青春校园' }, { value: '138', label: '文学区武侠玄幻' }, { value: '136', label: '文学区激情都市' }, { value: '139', label: '文学区TXT下载' },
+        { value: '145', label: '原档自提字幕区' }, { value: '146', label: '原档自译字幕区' }, { value: '121', label: '原档字幕分享区' }, { value: '159', label: '原档新作区' },
+        { value: '41', label: '在线国产' }, { value: '109', label: '在线中文字幕' }, { value: '42', label: '在线日韩无码' }, { value: '43', label: '在线日韩有码' },
+        { value: '44', label: '在线欧美风情' }, { value: '45', label: '在线卡通动漫' }, { value: '46', label: '在线剧情三级' }, { value: '155', label: '图区原创自拍' },
+        { value: '125', label: '图区转帖自拍' }, { value: '50', label: '图区华人街拍' }, { value: '48', label: '图区亚洲性爱' }, { value: '49', label: '图区欧美性爱' },
+        { value: '117', label: '图区卡通动漫' }, { value: '165', label: '图区套图下载' }
+    ];
 
     // ================= 115 接口与交互优化 =================
     window.check115Auth = () => {
@@ -139,6 +152,14 @@
     const GlobalInlineQueue = new TaskQueue(1, 1000);
 
     const getTid = (url) => { let m = url.match(/tid=(\d+)/); if (m) return m[1]; m = url.match(/thread-(\d+)/); if (m) return m[1]; return url; };
+    const normalizeStringArray = (value, fallback = []) => {
+        let arr = value;
+        if (typeof arr === 'string') {
+            try { arr = JSON.parse(arr); } catch(e) { arr = fallback; }
+        }
+        if (!Array.isArray(arr)) arr = fallback;
+        return [...new Set(arr.map(item => String(item).trim()).filter(Boolean))];
+    };
     const migrateRules = (arr) => { if (!Array.isArray(arr)) return []; return arr.map(item => { if (typeof item === 'string') return { val: item, zone: 'all' }; return item; }); };
 
     let currentPageInterceptCount = 0;
@@ -153,9 +174,13 @@
         themeMode: GM_getValue('custom_theme_mode', 'auto'),
         hideReadPosts: GM_getValue('custom_hide_read', false),
         deepseekKey: GM_getValue('custom_deepseek_key', ''),
+        searchExcludeOptions: normalizeStringArray(GM_getValue('custom_search_exclude_options', ['度盘', '夸克', '内容隐藏', '搬运', 'SHA1']), ['度盘', '夸克', '内容隐藏', '搬运', 'SHA1']),
+        searchExcludeGroup: normalizeStringArray(GM_getValue('custom_search_exclude_group', [])),
+        searchTidGroup: normalizeStringArray(GM_getValue('custom_search_tid_group', [])),
         threadCache: {}, isExtracting: false, taskQueue: null,
         nextPageUrl: document.querySelector('a.nxt') ? document.querySelector('a.nxt').href : null, poolLinks: [], poolTorrents: [], auth115: { loggedIn: false, sign: '', time: '' }
     };
+    STATE.searchExcludeGroup = STATE.searchExcludeGroup.filter(item => STATE.searchExcludeOptions.includes(item));
 
     GM_setValue('custom_blocked_keywords', STATE.blocked); GM_setValue('custom_blocked_users', STATE.blockedUsers);
     GM_setValue('custom_blocked_tags', STATE.blockedTags); GM_setValue('custom_highlight_keywords', STATE.highlighted);
@@ -209,9 +234,24 @@
         body.custom-hide-read-mode tbody[data-custom-read="true"] { display: none !important; }
         .custom-viewed-tag { background: #409EFF; color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 12px; margin-left: 8px; font-weight: normal; vertical-align: middle; }
 
-        .custom-inline-preview { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
+        .custom-inline-preview-row td { padding-top: 4px; padding-bottom: 8px; }
+        .custom-inline-preview { display: flex; gap: 5px; flex-wrap: wrap; }
         .custom-inline-preview img { max-height: 250px !important; max-width: 375px !important; object-fit: cover !important; border-radius: 4px !important; border: 1px solid var(--f-border) !important; cursor: pointer !important; transition: opacity 0.2s; }
         .custom-inline-preview img:hover { opacity: 0.8; }
+        .custom-search-filter-panel { display:flex; flex-direction:column; gap:10px; padding:10px; background:var(--f-panel-bg); border:1px solid var(--f-border); border-radius:8px; }
+        .custom-search-filter-panel.inline { margin: 12px 0; }
+        .custom-search-filter-title { font-size:13px; font-weight:bold; }
+        .custom-search-filter-desc, .custom-search-filter-status { font-size:12px; color:var(--f-log-time); }
+        .custom-search-filter-editor { width:100%; min-height:72px; resize:vertical; box-sizing:border-box; }
+        .custom-search-filter-groups { display:grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap:10px; }
+        .custom-search-filter-group { border:1px solid var(--f-border); border-radius:6px; padding:8px; background:var(--f-bg); min-height: 100px; }
+        .custom-search-filter-group-title { font-size:12px; font-weight:bold; margin-bottom:6px; }
+        .custom-search-filter-list { display:flex; flex-direction:column; gap:5px; max-height:220px; overflow:auto; }
+        .custom-search-filter-label { display:flex; align-items:flex-start; gap:6px; font-size:12px; cursor:pointer; }
+        .custom-search-filter-label input { margin-top: 2px; cursor:pointer; }
+        .custom-search-filter-actions { display:flex; gap:8px; flex-wrap:wrap; }
+        .custom-search-filter-actions .custom-base-btn { flex:1; margin-top:0; }
+        .custom-search-hidden-result { display:none !important; }
 
         .btn-115-inline { font-size:12px; cursor:pointer; padding:4px 8px; background-color: #6f42c1; color: white; border: none; border-radius: 3px; font-weight:bold; transition: background-color 0.2s, opacity 0.2s; white-space: nowrap; vertical-align: middle; }
         .btn-115-inline:hover { opacity: 0.8; }
@@ -524,7 +564,15 @@
         link.parentNode.insertBefore(cb, link);
         evaluateThreadRules(tbody, link, title, url, authorName, authorUID, typeName, cb);
 
-        const previewBox = document.createElement('div'); previewBox.className = 'custom-inline-preview'; link.parentNode.appendChild(previewBox);
+        const previewRow = document.createElement('tr');
+        previewRow.className = 'custom-inline-preview-row';
+        const previewCell = document.createElement('td');
+        previewCell.colSpan = Math.max(tbody.querySelectorAll('tr:first-child > *').length, 1);
+        const previewBox = document.createElement('div');
+        previewBox.className = 'custom-inline-preview';
+        previewCell.appendChild(previewBox);
+        previewRow.appendChild(previewCell);
+        tbody.appendChild(previewRow);
 
         // 异步缓存前置嗅探
         (async () => {
@@ -571,6 +619,176 @@
             evaluateThreadRules(tbody, link, title, url, authorName, authorUID, typeName, cb);
         });
     };
+
+    const isSearchPage = /search\.php\?mod=forum/.test(location.href);
+    const searchFilterRenderers = [];
+
+    const isSearchResultVisible = (item) => {
+        if (STATE.searchTidGroup.length > 0) {
+            const link = item.querySelector('.xi1');
+            const href = link ? (link.getAttribute('href') || '') : '';
+            if (!STATE.searchTidGroup.some(fid => href.includes(`fid=${fid}`) || href.includes(`forum-${fid}`))) return false;
+        }
+        if (STATE.searchExcludeGroup.length > 0) {
+            const text = `${item.querySelector('p:nth-of-type(2)')?.textContent || ''} ${item.querySelector('.xs3')?.textContent || ''}`.toLowerCase();
+            if (STATE.searchExcludeGroup.some(keyword => text.includes(keyword.toLowerCase()))) return false;
+        }
+        return true;
+    };
+
+    const applySearchFilters = () => {
+        if (!isSearchPage) return null;
+        const items = Array.from(document.querySelectorAll('.pbw'));
+        let visible = 0;
+        items.forEach(item => {
+            const shouldShow = isSearchResultVisible(item);
+            item.classList.toggle('custom-search-hidden-result', !shouldShow);
+            if (shouldShow) visible++;
+        });
+        return { total: items.length, visible };
+    };
+
+    const createSearchFilterGroup = (title, groupKey, options) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'custom-search-filter-group';
+        wrap.innerHTML = `<div class="custom-search-filter-group-title">${title}</div>`;
+
+        const list = document.createElement('div');
+        list.className = 'custom-search-filter-list';
+        const createOption = (labelText, value, checked, isSelectAll = false) => {
+            const label = document.createElement('label');
+            label.className = 'custom-search-filter-label';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = checked;
+            if (isSelectAll) input.dataset.selectAll = '1';
+            else input.value = value;
+            const text = document.createElement('span');
+            text.textContent = labelText;
+            label.append(input, text);
+            return label;
+        };
+
+        list.appendChild(createOption('全选', '__all__', false, true));
+        options.forEach(option => list.appendChild(createOption(option.label, option.value, STATE[groupKey].includes(option.value))));
+        wrap.appendChild(list);
+
+        const syncSelectAll = () => {
+            const selectAll = list.querySelector('input[data-select-all="1"]');
+            const others = Array.from(list.querySelectorAll('input[type="checkbox"]:not([data-select-all])'));
+            const checkedCount = others.filter(box => box.checked).length;
+            selectAll.checked = checkedCount > 0 && checkedCount === others.length;
+            selectAll.indeterminate = checkedCount > 0 && checkedCount < others.length;
+        };
+
+        list.addEventListener('change', (e) => {
+            const target = e.target;
+            if (!(target instanceof HTMLInputElement)) return;
+            const others = Array.from(list.querySelectorAll('input[type="checkbox"]:not([data-select-all])'));
+            if (target.dataset.selectAll === '1') {
+                others.forEach(box => { box.checked = target.checked; });
+            }
+            STATE[groupKey] = others.filter(box => box.checked).map(box => box.value);
+            saveState(groupKey === 'searchExcludeGroup' ? 'custom_search_exclude_group' : 'custom_search_tid_group', STATE[groupKey]);
+            syncSelectAll();
+            applySearchFilters();
+            searchFilterRenderers.forEach(render => render());
+        });
+
+        syncSelectAll();
+        return wrap;
+    };
+
+    const renderSearchFilterPanel = (container, options = {}) => {
+        const { includeEditor = false, inline = false } = options;
+        const stats = applySearchFilters();
+        container.className = `custom-search-filter-panel${inline ? ' inline' : ''}`;
+        container.innerHTML = '';
+
+        const title = document.createElement('div');
+        title.className = 'custom-search-filter-title';
+        title.textContent = inline ? '🔎 搜索结果筛选' : '🔎 筛选搜索';
+        const desc = document.createElement('div');
+        desc.className = 'custom-search-filter-desc';
+        desc.textContent = isSearchPage ? '可按排除关键字与板块即时筛选当前搜索结果。' : '在这里配置筛选条件，进入搜索页后会自动生效。';
+        const status = document.createElement('div');
+        status.className = 'custom-search-filter-status';
+        status.textContent = stats ? `当前显示 ${stats.visible} / ${stats.total} 条搜索结果` : `已选排除词 ${STATE.searchExcludeGroup.length} 个，已选板块 ${STATE.searchTidGroup.length} 个`;
+        container.append(title, desc, status);
+
+        if (includeEditor) {
+            const editorLabel = document.createElement('div');
+            editorLabel.className = 'custom-search-filter-group-title';
+            editorLabel.textContent = '排除关键字候选（每行一个）';
+            const editor = document.createElement('textarea');
+            editor.className = 'custom-form-input custom-search-filter-editor';
+            editor.value = STATE.searchExcludeOptions.join('\n');
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'custom-base-btn';
+            saveBtn.style.backgroundColor = '#17a2b8';
+            saveBtn.style.color = '#fff';
+            saveBtn.innerText = '💾 保存候选关键字';
+            saveBtn.onclick = () => {
+                STATE.searchExcludeOptions = normalizeStringArray(editor.value.split('\n'));
+                STATE.searchExcludeGroup = STATE.searchExcludeGroup.filter(item => STATE.searchExcludeOptions.includes(item));
+                saveState('custom_search_exclude_options', STATE.searchExcludeOptions);
+                saveState('custom_search_exclude_group', STATE.searchExcludeGroup);
+                applySearchFilters();
+                searchFilterRenderers.forEach(render => render());
+            };
+            container.append(editorLabel, editor, saveBtn);
+        }
+
+        const groups = document.createElement('div');
+        groups.className = 'custom-search-filter-groups';
+        groups.appendChild(createSearchFilterGroup('排除关键字', 'searchExcludeGroup', STATE.searchExcludeOptions.map(item => ({ value: item, label: item }))));
+        groups.appendChild(createSearchFilterGroup('只看板块', 'searchTidGroup', SEARCH_TID_OPTIONS));
+        container.appendChild(groups);
+
+        const actions = document.createElement('div');
+        actions.className = 'custom-search-filter-actions';
+        const applyBtn = document.createElement('button');
+        applyBtn.className = 'custom-base-btn';
+        applyBtn.style.backgroundColor = '#28a745';
+        applyBtn.style.color = '#fff';
+        applyBtn.innerText = '立即应用筛选';
+        applyBtn.disabled = !isSearchPage;
+        applyBtn.onclick = () => {
+            const result = applySearchFilters();
+            if (result) alert(`筛选完成：当前显示 ${result.visible} / ${result.total} 条结果。`);
+            searchFilterRenderers.forEach(render => render());
+        };
+        const resetBtn = document.createElement('button');
+        resetBtn.className = 'custom-base-btn';
+        resetBtn.style.backgroundColor = '#6c757d';
+        resetBtn.style.color = '#fff';
+        resetBtn.innerText = '清空筛选';
+        resetBtn.onclick = () => {
+            STATE.searchExcludeGroup = [];
+            STATE.searchTidGroup = [];
+            saveState('custom_search_exclude_group', []);
+            saveState('custom_search_tid_group', []);
+            applySearchFilters();
+            searchFilterRenderers.forEach(render => render());
+        };
+        actions.append(applyBtn, resetBtn);
+        container.appendChild(actions);
+    };
+
+    const registerSearchFilterPanel = (container, options) => {
+        const render = () => renderSearchFilterPanel(container, options);
+        searchFilterRenderers.push(render);
+        render();
+    };
+
+    if (isSearchPage) {
+        const searchList = document.querySelector('.tl');
+        if (searchList && searchList.parentNode) {
+            const inlinePanel = document.createElement('div');
+            searchList.parentNode.insertBefore(inlinePanel, searchList);
+            registerSearchFilterPanel(inlinePanel, { inline: true });
+        }
+    }
 
     // ================= 帖子正文直推引擎 =================
     const processInlineLinks = () => {
@@ -869,7 +1087,7 @@
     header.querySelector('#custom-min-btn').onclick = () => { mainWindow.style.display = 'none'; floatBtn.style.display = 'flex'; };
 
     const tabBar = document.createElement('div'); tabBar.className = 'custom-tab-bar';
-    const tabs = [{ id: 'tab-actions', name: '🚀 操作' }, { id: 'tab-pool', name: '📦 收纳' }, { id: 'tab-rules', name: '🛡️ 规则' }, { id: 'tab-logs', name: '📋 日志' }, { id: 'tab-data', name: '💾 数据' }];
+    const tabs = [{ id: 'tab-actions', name: '🚀 操作' }, { id: 'tab-pool', name: '📦 收纳' }, { id: 'tab-rules', name: '🛡️ 规则' }, { id: 'tab-search', name: '🔎 搜索' }, { id: 'tab-logs', name: '📋 日志' }, { id: 'tab-data', name: '💾 数据' }];
     let currentTab = 'tab-actions';
     const switchTab = (targetId) => { currentTab = targetId; mainWindow.querySelectorAll('.custom-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.target === targetId)); mainWindow.querySelectorAll('.custom-tab-content').forEach(c => c.classList.toggle('active', c.id === targetId)); if (targetId === 'tab-pool') { window.updatePoolUI(); } };
     tabs.forEach((tab, index) => { const btn = document.createElement('button'); btn.className = `custom-tab-btn ${index === 0 ? 'active' : ''}`; btn.dataset.target = tab.id; btn.innerText = tab.name; btn.onclick = () => switchTab(tab.id); tabBar.appendChild(btn); });
@@ -1036,20 +1254,24 @@
     tabRules.appendChild(createKeywordManager('👤 屏蔽指定用户', STATE.blockedUsers, 'custom_blocked_users', '账号或UID'));
     tabRules.appendChild(createKeywordManager('⭐ 高亮标题关键词', STATE.highlighted, 'custom_highlight_keywords', '输入高亮词'));
 
-    // --- Tab 4: 日志 ---
+    // --- Tab 4: 搜索 ---
+    const tabSearch = document.createElement('div'); tabSearch.id = 'tab-search'; tabSearch.className = 'custom-tab-content';
+    registerSearchFilterPanel(tabSearch, { includeEditor: true });
+
+    // --- Tab 5: 日志 ---
     const tabLogs = document.createElement('div'); tabLogs.id = 'tab-logs'; tabLogs.className = 'custom-tab-content'; const logHeader = document.createElement('div'); logHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--f-border); padding-bottom: 5px; margin-bottom: 5px;'; logHeader.innerHTML = '<span style="font-weight:bold; font-size:13px;">当次拦截记录 (刷新清空)</span>'; const clearLogBtn = document.createElement('button'); clearLogBtn.innerText = '清空'; clearLogBtn.style.cssText = 'padding: 2px 8px; background-color: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;'; clearLogBtn.onclick = () => { STATE.interceptionLog = []; window.updateLogPanel(); }; logHeader.appendChild(clearLogBtn); const logListContainer = document.createElement('div'); logListContainer.style.cssText = 'overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 4px;'; tabLogs.append(logHeader, logListContainer);
     window.updateLogPanel = () => { logListContainer.innerHTML = ''; if (STATE.interceptionLog.length === 0) { logListContainer.innerHTML = '<div style="color:var(--f-log-time); font-size:12px; text-align:center; margin-top:10px;">暂无拦截记录</div>'; return; } STATE.interceptionLog.forEach(log => { const item = document.createElement('div'); item.className = 'custom-log-item'; item.innerHTML = `<div><span class="custom-log-time">[${log.time}]</span><span class="custom-log-reason">${log.reason}</span></div><a href="${log.url}" target="_blank" class="custom-log-title">${log.title}</a>`; logListContainer.appendChild(item); }); }; window.updateLogPanel();
 
-    // --- Tab 5: 数据 ---
+    // --- Tab 6: 数据 ---
     const tabData = document.createElement('div'); tabData.id = 'tab-data'; tabData.className = 'custom-tab-content'; tabData.innerHTML = `<div style="font-size:12px; color:var(--f-log-time); margin-bottom:10px;">您可以将当前所有的屏蔽规则、已读记录备份为本地文件，防止清理缓存后丢失。</div>`;
-    const btnExport = createBtn('📤 导出配置备份 (.json)', '#17a2b8'); btnExport.onclick = () => { const dataStr = JSON.stringify({ blocked: STATE.blocked, blockedUsers: STATE.blockedUsers, blockedTags: STATE.blockedTags, highlighted: STATE.highlighted, readLinks: STATE.readLinks, autoLoadNextPage: STATE.autoLoadNextPage, themeMode: STATE.themeMode, hideReadPosts: STATE.hideReadPosts, deepseekKey: STATE.deepseekKey }, null, 2); const blob = new Blob([dataStr], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `SHT_Script_Backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); };
+    const btnExport = createBtn('📤 导出配置备份 (.json)', '#17a2b8'); btnExport.onclick = () => { const dataStr = JSON.stringify({ blocked: STATE.blocked, blockedUsers: STATE.blockedUsers, blockedTags: STATE.blockedTags, highlighted: STATE.highlighted, readLinks: STATE.readLinks, autoLoadNextPage: STATE.autoLoadNextPage, themeMode: STATE.themeMode, hideReadPosts: STATE.hideReadPosts, deepseekKey: STATE.deepseekKey, searchExcludeOptions: STATE.searchExcludeOptions, searchExcludeGroup: STATE.searchExcludeGroup, searchTidGroup: STATE.searchTidGroup }, null, 2); const blob = new Blob([dataStr], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `SHT_Script_Backup_${new Date().toISOString().slice(0,10)}.json`; a.click(); };
     const importInput = document.createElement('input'); importInput.type = 'file'; importInput.accept = '.json'; importInput.style.display = 'none';
-    importInput.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { const parsed = JSON.parse(ev.target.result); if (parsed.blocked) saveState('custom_blocked_keywords', migrateRules(parsed.blocked)); if (parsed.blockedUsers) saveState('custom_blocked_users', migrateRules(parsed.blockedUsers)); if (parsed.blockedTags) saveState('custom_blocked_tags', migrateRules(parsed.blockedTags)); if (parsed.highlighted) saveState('custom_highlight_keywords', migrateRules(parsed.highlighted)); if (parsed.readLinks) saveState('custom_read_links', parsed.readLinks); if (parsed.autoLoadNextPage !== undefined) saveState('custom_auto_load', parsed.autoLoadNextPage); if (parsed.themeMode !== undefined) saveState('custom_theme_mode', parsed.themeMode); if (parsed.hideReadPosts !== undefined) saveState('custom_hide_read', parsed.hideReadPosts); if (parsed.deepseekKey !== undefined) saveState('custom_deepseek_key', parsed.deepseekKey); alert('数据恢复成功！网页即将刷新...'); location.reload(); } catch(err) { alert('文件格式读取失败'); } }; reader.readAsText(file); };
+    importInput.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { const parsed = JSON.parse(ev.target.result); if (parsed.blocked) saveState('custom_blocked_keywords', migrateRules(parsed.blocked)); if (parsed.blockedUsers) saveState('custom_blocked_users', migrateRules(parsed.blockedUsers)); if (parsed.blockedTags) saveState('custom_blocked_tags', migrateRules(parsed.blockedTags)); if (parsed.highlighted) saveState('custom_highlight_keywords', migrateRules(parsed.highlighted)); if (parsed.readLinks) saveState('custom_read_links', parsed.readLinks); if (parsed.autoLoadNextPage !== undefined) saveState('custom_auto_load', parsed.autoLoadNextPage); if (parsed.themeMode !== undefined) saveState('custom_theme_mode', parsed.themeMode); if (parsed.hideReadPosts !== undefined) saveState('custom_hide_read', parsed.hideReadPosts); if (parsed.deepseekKey !== undefined) saveState('custom_deepseek_key', parsed.deepseekKey); if (parsed.searchExcludeOptions) saveState('custom_search_exclude_options', normalizeStringArray(parsed.searchExcludeOptions)); if (parsed.searchExcludeGroup) saveState('custom_search_exclude_group', normalizeStringArray(parsed.searchExcludeGroup)); if (parsed.searchTidGroup) saveState('custom_search_tid_group', normalizeStringArray(parsed.searchTidGroup)); alert('数据恢复成功！网页即将刷新...'); location.reload(); } catch(err) { alert('文件格式读取失败'); } }; reader.readAsText(file); };
     const btnImport = createBtn('📥 导入配置恢复', '#6c757d'); btnImport.onclick = () => importInput.click();
     const btnReset = createBtn('💥 彻底重置脚本 (清除所有缓存与配置)', '#dc3545'); btnReset.style.marginTop = '15px';
-    btnReset.onclick = () => { if (confirm('警告：此操作将清空所有屏蔽规则、已读记录、悬浮球位置以及文章缓存！\n强烈建议先点击上方的“导出配置”进行备份。\n\n确定要彻底重置并炸毁所有数据吗？')) { try { const keys = typeof GM_listValues === 'function' ? GM_listValues() : ['custom_blocked_keywords', 'custom_blocked_users', 'custom_blocked_tags', 'custom_highlight_keywords', 'custom_read_links', 'custom_auto_load', 'custom_theme_mode', 'custom_panel_pos', 'custom_float_pos', 'custom_hide_read', 'custom_deepseek_key']; keys.forEach(k => { try { GM_deleteValue(k); } catch(e) { GM_setValue(k, ''); } }); } catch(e) {} try { indexedDB.deleteDatabase('SHT_Super_Cache'); indexedDB.deleteDatabase('SHT_Super_Cache_V2'); indexedDB.deleteDatabase('SHT_Super_Cache_V3'); indexedDB.deleteDatabase('SHT_Super_Cache_V4'); } catch(e) {} alert('💥 核心缓存与本地配置已全部炸毁！\n网页即将自动刷新，迎接纯净版...'); location.reload(); } };
+    btnReset.onclick = () => { if (confirm('警告：此操作将清空所有屏蔽规则、已读记录、悬浮球位置以及文章缓存！\n强烈建议先点击上方的“导出配置”进行备份。\n\n确定要彻底重置并炸毁所有数据吗？')) { try { const keys = typeof GM_listValues === 'function' ? GM_listValues() : ['custom_blocked_keywords', 'custom_blocked_users', 'custom_blocked_tags', 'custom_highlight_keywords', 'custom_read_links', 'custom_auto_load', 'custom_theme_mode', 'custom_panel_pos', 'custom_float_pos', 'custom_hide_read', 'custom_deepseek_key', 'custom_search_exclude_options', 'custom_search_exclude_group', 'custom_search_tid_group']; keys.forEach(k => { try { GM_deleteValue(k); } catch(e) { GM_setValue(k, ''); } }); } catch(e) {} try { indexedDB.deleteDatabase('SHT_Super_Cache'); indexedDB.deleteDatabase('SHT_Super_Cache_V2'); indexedDB.deleteDatabase('SHT_Super_Cache_V3'); indexedDB.deleteDatabase('SHT_Super_Cache_V4'); } catch(e) {} alert('💥 核心缓存与本地配置已全部炸毁！\n网页即将自动刷新，迎接纯净版...'); location.reload(); } };
     tabData.append(btnExport, btnImport, importInput, btnReset);
 
-    contentArea.append(tabActions, tabPool, tabRules, tabLogs, tabData); mainWindow.append(header, tabBar, contentArea); document.body.appendChild(mainWindow);
+    contentArea.append(tabActions, tabPool, tabRules, tabSearch, tabLogs, tabData); mainWindow.append(header, tabBar, contentArea); document.body.appendChild(mainWindow);
 
 })();
