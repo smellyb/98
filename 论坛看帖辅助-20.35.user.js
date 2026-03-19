@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助123
 // @namespace    http://tampermonkey.net/
-// @version      20.36
+// @version      20.38
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -108,6 +108,221 @@
         const getSearchFilterSettings = () => ({
             TIDGroup: getJSONValue('TIDGroup', '[]')
         });
+        const searchThreadCache = new Map();
+        let currentSearchLbIndex = 0;
+        let currentSearchGallery = [];
+
+        GM_addStyle(`
+            .custom-search-preview-wrap { margin-top: 12px; }
+            .custom-search-preview-box { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+            .custom-search-preview-box img {
+                max-width: min(260px, calc(50vw - 48px)); max-height: 260px; object-fit: cover; border-radius: 8px;
+                border: 1px solid #efc5d9; cursor: pointer; box-shadow: 0 4px 12px rgba(143, 42, 144, 0.12);
+                transition: transform 0.2s ease, opacity 0.2s ease;
+            }
+            .custom-search-preview-box img:hover { transform: translateY(-2px); opacity: 0.88; }
+            .custom-search-preview-status {
+                display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 1.4;
+                padding: 4px 9px; border-radius: 999px; user-select: none;
+                color: #7a6470; background: #fff9fc; border: 1px solid #f2d7e5;
+            }
+            #custom-search-lightbox {
+                position: fixed; inset: 0; z-index: 9999999; display: none; align-items: center; justify-content: center;
+                background: rgba(0, 0, 0, 0.92); user-select: none;
+            }
+            #custom-search-lightbox.active { display: flex; }
+            #custom-search-lightbox img {
+                max-width: 92vw; max-height: 88vh; object-fit: contain; border-radius: 8px;
+                box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+            }
+            .custom-search-lightbox-nav, .custom-search-lightbox-close, .custom-search-lightbox-counter {
+                position: absolute; color: #fff; z-index: 2;
+            }
+            .custom-search-lightbox-nav {
+                top: 50%; transform: translateY(-50%); font-size: 40px; cursor: pointer;
+                padding: 12px 16px; border-radius: 8px; background: rgba(0, 0, 0, 0.35);
+            }
+            .custom-search-lightbox-nav:hover, .custom-search-lightbox-close:hover { background: rgba(0, 0, 0, 0.58); }
+            .custom-search-lightbox-prev { left: 24px; }
+            .custom-search-lightbox-next { right: 24px; }
+            .custom-search-lightbox-close {
+                top: 20px; right: 24px; font-size: 34px; cursor: pointer; padding: 4px 12px; border-radius: 8px;
+            }
+            .custom-search-lightbox-counter {
+                bottom: 20px; left: 50%; transform: translateX(-50%); font-size: 13px;
+                background: rgba(0, 0, 0, 0.55); border-radius: 999px; padding: 5px 12px;
+            }
+        `);
+
+        const ensureSearchLightbox = () => {
+            let lightbox = document.getElementById('custom-search-lightbox');
+            if (lightbox) return lightbox;
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="custom-search-lightbox">
+                    <span class="custom-search-lightbox-close">×</span>
+                    <span class="custom-search-lightbox-nav custom-search-lightbox-prev">❮</span>
+                    <img alt="搜索页预览大图" />
+                    <span class="custom-search-lightbox-nav custom-search-lightbox-next">❯</span>
+                    <span class="custom-search-lightbox-counter"></span>
+                </div>
+            `);
+            lightbox = document.getElementById('custom-search-lightbox');
+            const img = lightbox.querySelector('img');
+            const counter = lightbox.querySelector('.custom-search-lightbox-counter');
+            const render = () => {
+                if (!currentSearchGallery.length) return;
+                img.src = currentSearchGallery[currentSearchLbIndex];
+                counter.textContent = `${currentSearchLbIndex + 1} / ${currentSearchGallery.length}`;
+            };
+            const showAt = (index) => {
+                if (!currentSearchGallery.length) return;
+                currentSearchLbIndex = (index + currentSearchGallery.length) % currentSearchGallery.length;
+                render();
+                lightbox.classList.add('active');
+            };
+            lightbox.querySelector('.custom-search-lightbox-close').addEventListener('click', () => lightbox.classList.remove('active'));
+            lightbox.querySelector('.custom-search-lightbox-prev').addEventListener('click', (event) => {
+                event.stopPropagation();
+                showAt(currentSearchLbIndex - 1);
+            });
+            lightbox.querySelector('.custom-search-lightbox-next').addEventListener('click', (event) => {
+                event.stopPropagation();
+                showAt(currentSearchLbIndex + 1);
+            });
+            lightbox.addEventListener('click', (event) => {
+                if (event.target === lightbox) lightbox.classList.remove('active');
+            });
+            document.addEventListener('keydown', (event) => {
+                if (!lightbox.classList.contains('active')) return;
+                if (event.key === 'Escape') lightbox.classList.remove('active');
+                if (event.key === 'ArrowLeft') showAt(currentSearchLbIndex - 1);
+                if (event.key === 'ArrowRight') showAt(currentSearchLbIndex + 1);
+            });
+            lightbox.showAt = showAt;
+            return lightbox;
+        };
+
+        const openSearchLightbox = (images, currentSrc) => {
+            const lightbox = ensureSearchLightbox();
+            currentSearchGallery = images.length ? images : [currentSrc];
+            const index = currentSearchGallery.indexOf(currentSrc);
+            lightbox.showAt(index >= 0 ? index : 0);
+        };
+
+        const fetchSearchPreviewImages = (url) => new Promise((resolve, reject) => {
+            if (searchThreadCache.has(url)) {
+                resolve(searchThreadCache.get(url));
+                return;
+            }
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+                timeout: 12000,
+                onload: (response) => {
+                    if (response.status < 200 || response.status >= 400) {
+                        reject(new Error(`HTTP ${response.status}`));
+                        return;
+                    }
+                    const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
+                    const firstPost = doc.querySelector('#postlist > div[id^="post_"]');
+                    if (!firstPost) {
+                        searchThreadCache.set(url, []);
+                        resolve([]);
+                        return;
+                    }
+                    const images = Array.from(firstPost.querySelectorAll('.t_f img, .pcb img'))
+                        .map((img) => img.getAttribute('file') || img.getAttribute('zoomfile') || img.src)
+                        .filter((src) => {
+                            if (!src) return false;
+                            const lowerSrc = src.toLowerCase();
+                            return !lowerSrc.includes('smilie')
+                                && !lowerSrc.includes('smiley')
+                                && !lowerSrc.includes('avatar')
+                                && !lowerSrc.includes('torrent.gif')
+                                && !lowerSrc.includes('hrline')
+                                && !lowerSrc.includes('common/')
+                                && !lowerSrc.includes('filetype/')
+                                && !lowerSrc.includes('static/image/');
+                        });
+                    const uniqueImages = [...new Set(images)].slice(0, 6);
+                    searchThreadCache.set(url, uniqueImages);
+                    resolve(uniqueImages);
+                },
+                ontimeout: () => reject(new Error('Timeout')),
+                onerror: () => reject(new Error('Network Error'))
+            });
+        });
+
+        const renderSearchPreview = async (pbw, previewBox, status) => {
+            if (previewBox.dataset.loaded === 'loading' || previewBox.dataset.loaded === 'done') return;
+            previewBox.dataset.loaded = 'loading';
+            status.textContent = '⏳ 正在自动加载预览图…';
+            status.style.display = 'inline-flex';
+            status.style.cursor = 'default';
+            try {
+                const link = pbw.querySelector('h3 a[href*="viewthread"]');
+                const images = link ? await fetchSearchPreviewImages(link.href) : [];
+                previewBox.innerHTML = '';
+                if (images.length) {
+                    images.forEach((src) => {
+                        const img = document.createElement('img');
+                        img.src = src;
+                        img.loading = 'lazy';
+                        img.addEventListener('click', () => openSearchLightbox(images, src));
+                        previewBox.appendChild(img);
+                    });
+                    status.textContent = `已自动加载 ${images.length} 张预览图`;
+                    previewBox.dataset.loaded = 'done';
+                } else {
+                    status.textContent = '⭕ 本帖无图片';
+                    previewBox.dataset.loaded = 'done';
+                }
+            } catch (error) {
+                previewBox.dataset.loaded = '';
+                status.textContent = '❌ 预览图加载失败，点击这里重试';
+                status.style.cursor = 'pointer';
+            }
+        };
+
+        const searchPreviewObserver = new IntersectionObserver((entries, observer) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting) return;
+                const pbw = entry.target;
+                const previewBox = pbw.querySelector('.custom-search-preview-box');
+                const status = pbw.querySelector('.custom-search-preview-status');
+                if (previewBox && status) renderSearchPreview(pbw, previewBox, status);
+                observer.unobserve(pbw);
+            });
+        }, { rootMargin: '200px' });
+
+        const enhanceSearchResultsWithPreview = () => {
+            document.querySelectorAll('#threadlist .pbw').forEach((pbw) => {
+                if (pbw.dataset.customPreviewBound === 'true') return;
+                pbw.dataset.customPreviewBound = 'true';
+                const link = pbw.querySelector('h3 a[href*="viewthread"]');
+                if (!link) return;
+                const wrap = document.createElement('div');
+                wrap.className = 'custom-search-preview-wrap';
+                const status = document.createElement('span');
+                status.className = 'custom-search-preview-status';
+                status.textContent = '🖼️ 预览图将在滚动到此处时自动加载';
+                const previewBox = document.createElement('div');
+                previewBox.className = 'custom-search-preview-box';
+                wrap.appendChild(status);
+                wrap.appendChild(previewBox);
+                pbw.appendChild(wrap);
+                status.addEventListener('click', (event) => {
+                    if (!status.textContent.includes('重试')) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    status.style.cursor = 'default';
+                    renderSearchPreview(pbw, previewBox, status);
+                });
+                searchPreviewObserver.observe(pbw);
+            });
+        };
+
         const doesTIDGroupMatch = (aElement, TIDGroup) => {
             const href = (aElement.getAttribute('href') || '').toLowerCase();
             return TIDGroup.some((tid) => href.includes(`fid=${tid}`) || href.includes(`forum-${tid}`));
@@ -324,17 +539,20 @@
             return true;
         };
 
-        const initSearchFilterButtonWhenReady = (retryCount = 0) => {
+        const initSearchFeaturesWhenReady = (retryCount = 0) => {
             const isReady = !!document.querySelector('#threadlist .pbw');
-            if (isReady && injectSearchFilterButton()) return;
+            if (isReady) {
+                enhanceSearchResultsWithPreview();
+                if (injectSearchFilterButton()) return;
+            }
             if (retryCount >= 40) return;
-            setTimeout(() => initSearchFilterButtonWhenReady(retryCount + 1), 250);
+            setTimeout(() => initSearchFeaturesWhenReady(retryCount + 1), 250);
         };
 
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => initSearchFilterButtonWhenReady(), { once: true });
+            document.addEventListener('DOMContentLoaded', () => initSearchFeaturesWhenReady(), { once: true });
         } else {
-            initSearchFilterButtonWhenReady();
+            initSearchFeaturesWhenReady();
         }
         return;
     }
