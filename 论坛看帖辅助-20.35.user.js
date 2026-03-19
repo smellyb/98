@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         论坛看帖辅助123
 // @namespace    http://tampermonkey.net/
-// @version      20.38
+// @version      20.37
 // @description  批量打开帖子、多维度屏蔽、115推送、一键提取资源、标题翻译等
 // @author       鲜切红薯片
 // @match        *://*.sehuatang.net/*
@@ -114,29 +114,13 @@
 
         GM_addStyle(`
             .custom-search-preview-wrap { margin-top: 10px; }
-            .custom-search-preview-box {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-                gap: 10px;
-                margin-top: 8px;
-            }
+            .custom-search-preview-box { display: flex; gap: 6px; flex-wrap: wrap; }
             .custom-search-preview-box img {
-                width: 100%;
-                min-height: 220px;
-                max-height: 320px;
-                object-fit: cover;
-                border-radius: 8px;
-                border: 1px solid #efc5d9;
-                cursor: pointer;
-                box-shadow: 0 4px 12px rgba(143, 42, 144, 0.12);
-                background: #fff5fb;
-                transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+                max-width: 180px; max-height: 180px; object-fit: cover; border-radius: 6px;
+                border: 1px solid #efc5d9; cursor: pointer; box-shadow: 0 2px 8px rgba(143, 42, 144, 0.08);
+                transition: transform 0.2s ease, opacity 0.2s ease;
             }
-            .custom-search-preview-box img:hover {
-                transform: translateY(-2px);
-                opacity: 0.92;
-                box-shadow: 0 8px 18px rgba(143, 42, 144, 0.18);
-            }
+            .custom-search-preview-box img:hover { transform: translateY(-1px); opacity: 0.88; }
             .custom-search-preview-trigger, .custom-search-preview-status {
                 display: inline-flex; align-items: center; gap: 4px; font-size: 12px; line-height: 1.4;
                 padding: 4px 9px; border-radius: 999px; user-select: none;
@@ -145,11 +129,6 @@
                 color: #8f2a90; background: #fff5fb; border: 1px solid #e8bad2; cursor: pointer;
             }
             .custom-search-preview-trigger:hover { background: #ffeaf5; }
-            .custom-search-preview-trigger.is-loading {
-                opacity: 0.75;
-                cursor: progress;
-                pointer-events: none;
-            }
             .custom-search-preview-status {
                 color: #7a6470; background: #fff9fc; border: 1px solid #f2d7e5;
             }
@@ -236,68 +215,83 @@
             lightbox.showAt(index >= 0 ? index : 0);
         };
 
-        const fetchSearchPreviewImages = async (url) => {
-            if (searchThreadCache.has(url)) return searchThreadCache.get(url);
-            const data = await fetchWithRetry(url, null, 0, 12000);
-            const images = [...new Set((data?.allImages || data?.images || []).filter(Boolean))].slice(0, 6);
-            searchThreadCache.set(url, images);
-            return images;
-        };
+        const fetchSearchPreviewImages = (url) => new Promise((resolve, reject) => {
+            if (searchThreadCache.has(url)) {
+                resolve(searchThreadCache.get(url));
+                return;
+            }
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+                timeout: 12000,
+                onload: (response) => {
+                    if (response.status < 200 || response.status >= 400) {
+                        reject(new Error(`HTTP ${response.status}`));
+                        return;
+                    }
+                    const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
+                    const firstPost = doc.querySelector('#postlist > div[id^="post_"]');
+                    if (!firstPost) {
+                        searchThreadCache.set(url, []);
+                        resolve([]);
+                        return;
+                    }
+                    const images = Array.from(firstPost.querySelectorAll('.t_f img, .pcb img'))
+                        .map((img) => img.getAttribute('file') || img.getAttribute('zoomfile') || img.src)
+                        .filter((src) => {
+                            if (!src) return false;
+                            const lowerSrc = src.toLowerCase();
+                            return !lowerSrc.includes('smilie')
+                                && !lowerSrc.includes('smiley')
+                                && !lowerSrc.includes('avatar')
+                                && !lowerSrc.includes('torrent.gif')
+                                && !lowerSrc.includes('hrline')
+                                && !lowerSrc.includes('common/')
+                                && !lowerSrc.includes('filetype/')
+                                && !lowerSrc.includes('static/image/');
+                        });
+                    const uniqueImages = [...new Set(images)].slice(0, 6);
+                    searchThreadCache.set(url, uniqueImages);
+                    resolve(uniqueImages);
+                },
+                ontimeout: () => reject(new Error('Timeout')),
+                onerror: () => reject(new Error('Network Error'))
+            });
+        });
 
-        const renderSearchPreview = (pbw, trigger, previewBox, status) => {
-            if (previewBox.dataset.loaded) return;
+        const renderSearchPreview = async (pbw, trigger, previewBox, status) => {
+            if (previewBox.dataset.loaded === 'loading' || previewBox.dataset.loaded === 'done') return;
             previewBox.dataset.loaded = 'loading';
-            trigger.textContent = '⏳ 加载中...';
-            trigger.classList.add('is-loading');
+            trigger.textContent = '⏳ 加载预览中';
             status.textContent = '正在获取图片…';
             status.style.display = 'inline-flex';
-
-            GlobalInlineQueue.addTasks([async () => {
-                try {
-                    const link = pbw.querySelector('h3 a[href*="viewthread"]');
-                    const images = link ? await fetchSearchPreviewImages(link.href) : [];
-                    previewBox.innerHTML = '';
-                    if (images.length) {
-                        images.forEach((src, index) => {
-                            const img = document.createElement('img');
-                            img.src = src;
-                            img.loading = index < 2 ? 'eager' : 'lazy';
-                            img.decoding = 'async';
-                            img.referrerPolicy = 'no-referrer';
-                            img.addEventListener('click', () => openSearchLightbox(images, src));
-                            previewBox.appendChild(img);
-                        });
-                        status.textContent = `已加载 ${images.length} 张预览图`;
-                        trigger.style.display = 'none';
-                        previewBox.dataset.loaded = 'done';
-                    } else {
-                        status.textContent = '⭕ 本帖无图片';
-                        trigger.style.display = 'none';
-                        previewBox.dataset.loaded = 'done';
-                    }
-                } catch (error) {
-                    previewBox.dataset.loaded = '';
-                    trigger.textContent = '🖼️ 重试预览图';
-                    trigger.classList.remove('is-loading');
-                    trigger.style.display = 'inline-flex';
-                    status.textContent = '❌ 图片加载失败';
-                } finally {
-                    trigger.classList.remove('is-loading');
+            try {
+                const link = pbw.querySelector('h3 a[href*="viewthread"]');
+                const images = link ? await fetchSearchPreviewImages(link.href) : [];
+                previewBox.innerHTML = '';
+                if (images.length) {
+                    images.forEach((src) => {
+                        const img = document.createElement('img');
+                        img.src = src;
+                        img.loading = 'lazy';
+                        img.addEventListener('click', () => openSearchLightbox(images, src));
+                        previewBox.appendChild(img);
+                    });
+                    status.textContent = `已加载 ${images.length} 张预览图`;
+                    trigger.style.display = 'none';
+                    previewBox.dataset.loaded = 'done';
+                } else {
+                    status.textContent = '⭕ 本帖无图片';
+                    trigger.style.display = 'none';
+                    previewBox.dataset.loaded = 'done';
                 }
-            }]);
+            } catch (error) {
+                previewBox.dataset.loaded = '';
+                trigger.textContent = '🖼️ 重试预览图';
+                status.textContent = '❌ 图片加载失败';
+            }
         };
-
-        const searchPreviewObserver = new IntersectionObserver((entries, observer) => {
-            entries.forEach((entry) => {
-                if (!entry.isIntersecting) return;
-                const pbw = entry.target;
-                const trigger = pbw.querySelector('.custom-search-preview-trigger');
-                const previewBox = pbw.querySelector('.custom-search-preview-box');
-                const status = pbw.querySelector('.custom-search-preview-status');
-                if (trigger && previewBox && status) renderSearchPreview(pbw, trigger, previewBox, status);
-                observer.unobserve(pbw);
-            });
-        }, { rootMargin: '120px' });
 
         const enhanceSearchResultsWithPreview = () => {
             document.querySelectorAll('#threadlist .pbw').forEach((pbw) => {
@@ -309,7 +303,7 @@
                 wrap.className = 'custom-search-preview-wrap';
                 const trigger = document.createElement('span');
                 trigger.className = 'custom-search-preview-trigger';
-                trigger.textContent = '🖼️ 滚动到可视区域后自动加载';
+                trigger.textContent = '🖼️ 查看预览图';
                 const status = document.createElement('span');
                 status.className = 'custom-search-preview-status';
                 status.style.display = 'none';
@@ -324,7 +318,6 @@
                     event.stopPropagation();
                     renderSearchPreview(pbw, trigger, previewBox, status);
                 });
-                searchPreviewObserver.observe(pbw);
             });
         };
 
